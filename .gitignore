@@ -152,8 +152,7 @@ cython_debug/
 .vscode/
 
 # Project specific
-images/*.png
-!images/.gitkeep
+images/
 outputs/
 logs/
 data/
