@@ -1,0 +1,27 @@
+# AGV Compliance Environment Configuration
+
+physics:
+  dt: 0.02                    # 仿真控制步长 (秒), 对应 50Hz 控制频率
+  Kw: 10000.0                 # 机翼等效刚度 (N/m)
+  Cw: 500.0                   # 机翼等效结构阻尼 (N·s/m)
+  L: 2.0                      # 主从车理想几何跨距 (m)
+  history_buffer_size: 100    # 网络延迟缓冲区的最大容量
+
+impedance:
+  M_base: 50.0                # 虚拟质量基准值 (kg)
+  B_base: 500.0               # 虚拟阻尼基准值 (N·s/m)
+  K_base: 1000.0              # 虚拟刚度基准值 (N/m)
+  M_delta_max: 30.0           # 动作空间调整 M 的最大幅度
+  B_delta_max: 300.0          # 动作空间调整 B 的最大幅度
+  K_delta_max: 800.0          # 动作空间调整 K 的最大幅度
+
+rl:
+  frame_stack_k: 4            # 堆叠的历史状态帧数 (对应 O_t)
+  alpha: 0.001                # 奖励函数: 应力平方惩罚权重
+  beta: 10.0                  # 奖励函数: 误差平方惩罚权重
+  omega_3: 0.5                # 奖励函数: 动作抖动(平滑)惩罚权重
+
+comms:
+  protocol: "mock"            # 可选: "mock" 或 "modbus_tcp"
+  base_rtt: 0.05              # 基础网络延迟 (秒)
+  rtt_noise_std: 0.01         # 延迟抖动标准差 (秒)
