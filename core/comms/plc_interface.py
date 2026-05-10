@@ -55,7 +55,7 @@ class MockPLC(BasePLCInterface):
         self.np_random = np.random.default_rng()
         
         # 延迟模式配置 (用于 Domain Randomization)
-        self.delay_mode = env_config.get('comms', {}).get('delay_mode', 'standard')
+        self.delay_mode = config.get('comms', {}).get('delay_mode', 'standard')
         
         # TSN 注入的延迟缓冲
         self.injected_delay = None

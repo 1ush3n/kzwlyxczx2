@@ -60,7 +60,7 @@ class NestedGNNEnvWrapper:
                     break
                     
             # 4. 将物理层峰值应力转化为 GNN 的惩罚 (反向传播机制)
-            f_max = self.agv_env.config['rewards']['F_max']
+            f_max = self.agv_env.config['rl']['F_max']
             stress_penalty = - (peak_stress / f_max) ** 2 * 10.0 # 放大惩罚因子
             
             # 追加到当前 GNN 步的 reward 中
