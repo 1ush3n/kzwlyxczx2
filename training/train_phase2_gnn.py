@@ -96,38 +96,40 @@ def main():
             current_node = next_current_node
             action_mask = next_mask
             
-        # Episode 结束，计算 GAE 和更新
+        # Episode 结束，准备数据
+        if len(rewards) == 0: continue
+        
         if episode % 10 == 0:
             print(f"Episode {episode} finished with status: {info.get('status', 'unknown')}, Reward: {sum(rewards):.2f}, Peak Stress Penalty: {info.get('stress_penalty', 0):.2f}")
             
-        # 这里为了简化展示，我们采用 Episodic Update (实际上需要定长 rollout batch)
         # 将张量脱离计算图准备计算优势
-        next_val = agent.get_value(agent.encode(obs.to(device))).detach()
-        returns = compute_gae(next_val, rewards, masks, [v.detach() for v in values])
+        with torch.no_grad():
+            next_val = agent.get_value(agent.encode(obs.to(device))).detach()
+            returns = compute_gae(next_val, rewards, masks, [v.detach() for v in values])
+            returns = torch.tensor(returns).to(device)
+            old_values = torch.cat(values).detach().squeeze()
+            old_log_probs = torch.stack(log_probs).detach()
+            advantages = returns - old_values
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        returns = torch.tensor(returns).to(device)
-        values = torch.cat(values).squeeze()
-        log_probs = torch.stack(log_probs)
+        # PPO Update (简单版本：每回合执行一次梯度更新以保证稳定)
+        ppo_epochs_to_run = 1 
         
-        advantages = returns - values
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        old_log_probs = log_probs.detach()
-        
-        # PPO Update
-        for _ in range(ppo_epochs):
-            # 重新计算前向传播 (在实际生产中应保留历史轨迹再次输入网络)
-            # 这里为框架级结构展示，省略完整 replay buffer 的代码
-            ratio = torch.exp(log_probs - old_log_probs)
+        for _ in range(ppo_epochs_to_run):
+            # 这里的 log_probs 是带有梯度的，我们直接用它
+            ratio = torch.exp(torch.stack(log_probs) - old_log_probs)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = F.mse_loss(returns, values)
+            
+            # 计算新的 value 损失
+            new_values = torch.cat(values).squeeze()
+            critic_loss = F.mse_loss(returns, new_values)
             
             loss = actor_loss + 0.5 * critic_loss
             
             optimizer.zero_grad()
-            loss.backward()
+            loss.backward() 
             optimizer.step()
             
     torch.save(agent.state_dict(), os.path.join(save_dir, "ppo_gnn_final.pth"))

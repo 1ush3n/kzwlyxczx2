@@ -73,7 +73,7 @@ class GNNActorCritic(nn.Module):
         logits = self.routing_head(routing_input).squeeze(-1) # shape: [N]
         
         # 施加严苛掩码
-        logits[~action_mask] = -1e9
+        logits = logits.masked_fill(~action_mask, -1e9)
         
         return logits
         
