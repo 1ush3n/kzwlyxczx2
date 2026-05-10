@@ -23,6 +23,11 @@ class BasePLCInterface(ABC):
         pass
         
     @abstractmethod
+    def inject_tsn_delay(self, actual_delay: float):
+        """外部注入 TSN 调度算出的真实延迟"""
+        pass
+        
+    @abstractmethod
     def step_simulation(self, master_v_cmd: float):
         """（仅用于仿真）推进环境时间步"""
         pass
@@ -49,6 +54,9 @@ class MockPLC(BasePLCInterface):
         
         self.np_random = np.random.default_rng()
         
+        # TSN 注入的延迟缓冲
+        self.injected_delay = None
+        
     def set_rng(self, rng):
         self.np_random = rng
         
@@ -59,7 +67,12 @@ class MockPLC(BasePLCInterface):
         return True
         
     def _update_network_delay(self):
-        """模拟网络波动 (长尾分布)"""
+        """模拟网络波动 (长尾分布) 或使用注入的延迟"""
+        if self.injected_delay is not None:
+            self.current_rtt = self.injected_delay
+            self.injected_delay = None
+            return
+            
         if self.np_random.random() < 0.05:  # 5%的概率发生网络拥塞尖峰
             burst_delay = self.np_random.exponential(scale=0.1)
             self.current_rtt = self.base_rtt + burst_delay
@@ -80,6 +93,9 @@ class MockPLC(BasePLCInterface):
         self.current_M = Md
         self.current_B = Bd
         self.current_K = Kd
+        
+    def inject_tsn_delay(self, actual_delay: float):
+        self.injected_delay = actual_delay
         
     def step_simulation(self, master_v_cmd: float):
         self._update_network_delay()
@@ -114,6 +130,9 @@ class ModbusTCP_PLC(BasePLCInterface):
     def write_impedance(self, Md: float, Bd: float, Kd: float):
         # 未来这里可以替换为 client.write_registers(...)
         self.mock_backend.write_impedance(Md, Bd, Kd)
+        
+    def inject_tsn_delay(self, actual_delay: float):
+        self.mock_backend.inject_tsn_delay(actual_delay)
         
     def set_rng(self, rng):
         self.mock_backend.set_rng(rng)

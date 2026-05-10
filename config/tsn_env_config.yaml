@@ -1,0 +1,20 @@
+# TSN Environment Configuration
+
+network:
+  cycle_time: 1000.0          # GCL 周期时间 (T_cycle) = 1000 us
+  max_delay: 2000.0           # 全局流的 D_max 阈值 (us)
+  
+topology:
+  num_nodes: 10               # 节点总数 (包括AGV, AP, Switch)
+  num_ap: 3                   # 无线接入点数量
+  agv_node_idx: 9             # 当前控制的AGV在图中的节点索引
+  
+rewards:
+  step_penalty: -0.01         # 每路由一步的微小惩罚
+  collision_penalty: -100.0   # TSN 时间槽重叠的灾难性惩罚
+  dead_end_penalty: -50.0     # 走进死胡同（无路可走）的重度惩罚
+  latency_penalty_factor: -0.1 # 超时惩罚系数 (乘以超出时间的比例)
+  success_reward: 10.0        # 成功路由到终点的基础奖励
+
+training:
+  max_steps_per_flow: 15      # 一条流最多允许走的跳数
