@@ -12,6 +12,13 @@ class TSNTopology:
         self.num_ap = num_ap
         self.agv_idx = agv_idx
         
+        # 物理位置定义: {node_idx: (x, y)}
+        # 假设车间走廊长 20m, AP1 在 5m 处, AP2 在 15m 处
+        self.ap_coords = {
+            7: (5.0, 2.0),  # AP1
+            8: (15.0, 2.0)  # AP2
+        }
+        
         # 节点特征: [Type, CpuLoad, QueueLength]
         # Type: 0=Server/Switch, 1=AP, 2=AGV
         self.x = torch.zeros((num_nodes, 3), dtype=torch.float)
@@ -66,17 +73,30 @@ class TSNTopology:
         mask = self.edge_index[0] == node_idx
         return self.edge_index[1][mask].tolist()
         
-    def update_roaming_rssi(self, step: int):
-        """模拟 AGV 移动导致的 RSSI 衰减，制造掉线危机"""
-        # 假设 AGV 正从 AP1 (节点7) 驶向 AP2 (节点8)
-        # 节点7的 Rssi 将变差，节点8的 Rssi 将变好
+    def update_roaming_rssi(self, agv_x: float):
+        """基于物理距离的 RSSI 衰减模型 (Log-Distance Path Loss Model)"""
+        # RSSI(d) = P_tx - 10 * n * log10(d)
+        # 设定基准: 1m 处为 -30dBm, 路径损耗指数 n = 3.0 (工厂复杂环境)
+        p_tx = -30.0
+        n_loss = 3.0
+        agv_y = 0.0 # 假设 AGV 在 y=0 的轨迹上移动
+        
+        noise = np.random.normal(0, 0.5) # 少量多径效应/阴影衰减噪声
+        
         for i in range(self.num_edges):
             u, v = self.edge_index[0, i].item(), self.edge_index[1, i].item()
-            if (u == 7 and v == 9) or (u == 9 and v == 7):
-                # 逐渐变差，直到断联的边缘 -90dBm
-                current_rssi = -50.0 - (step * 2.0)
-                self.edge_attr[i, 2] = max(-95.0, current_rssi)
-            elif (u == 8 and v == 9) or (u == 9 and v == 8):
-                # 逐渐变好
-                current_rssi = -90.0 + (step * 2.0)
-                self.edge_attr[i, 2] = min(-30.0, current_rssi)
+            
+            ap_node = None
+            if v == 9 and u in self.ap_coords:
+                ap_node = u
+            elif u == 9 and v in self.ap_coords:
+                ap_node = v
+                
+            if ap_node is not None:
+                ap_x, ap_y = self.ap_coords[ap_node]
+                # 计算欧几里得距离
+                dist = np.sqrt((agv_x - ap_x)**2 + (agv_y - ap_y)**2)
+                
+                # 计算 RSSI
+                rssi = p_tx - 10 * n_loss * np.log10(dist + 1.0) + noise
+                self.edge_attr[i, 2] = max(-95.0, min(-20.0, rssi))

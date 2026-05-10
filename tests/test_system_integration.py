@@ -32,8 +32,12 @@ def run_integration_test(steps=200):
     }
     
     dt = agv_env.config['physics']['dt']
+    agv_x = 0.0
     
     for i in range(steps):
+        # 模拟 AGV 匀速移动 (1.5 m/s)
+        agv_x += 1.5 * dt
+        
         # --- 步骤 A: TSN 网络层决策 ---
         # 在集成测试中，我们模拟一个简单的路由策略：从 0 -> 1 -> 3 -> 5 -> 7 -> 9 (到达AGV)
         # 我们根据当前节点手动选择下一跳，并随机生成一个时间偏移
@@ -44,8 +48,8 @@ def run_integration_test(steps=200):
             next_hop = path_map[tsn_curr]
             t_offset = np.random.uniform(0.1, 0.9)
             
-            # 执行 TSN Step
-            obs, tsn_curr, mask, r_tsn, term, trunc, info = tsn_env.step(next_hop, t_offset)
+            # 执行 TSN Step，传入当前的 agv_x 用于计算物理距离产生的 RSSI
+            obs, tsn_curr, mask, r_tsn, term, trunc, info = tsn_env.step(next_hop, t_offset, agv_x=agv_x)
             
             # 如果成功到达或正在中转，累加延迟
             # 在这个简化测试中，我们假设每一跳的延迟都实时反馈给 PLC
@@ -127,7 +131,7 @@ def run_integration_test(steps=200):
     axs[2, 0].grid(True)
     
     # 6. 系统状态概览
-    axs[2, 1].text(0.1, 0.5, f"Steps: {steps}\nControl Freq: {1/dt:.1f}Hz\nAvg Latency: {np.mean(history['rtt']):.2f}ms\nMax Stress: {np.max(history['stress']):.2f}N", 
+    axs[2, 1].text(0.1, 0.5, f"Steps: {steps}\nControl Freq: {1/dt:.1f}Hz\nAvg Latency: {np.mean(history['rtt']):.2f}ms\nMax Stress: {np.max(np.abs(history['stress'])):.2f}N", 
                    fontsize=12, bbox=dict(facecolor='wheat', alpha=0.5))
     axs[2, 1].axis('off')
     axs[2, 1].set_title('System Metrics Summary')
@@ -140,4 +144,4 @@ def run_integration_test(steps=200):
 if __name__ == "__main__":
     # 确保 images 目录存在
     os.makedirs(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images'), exist_ok=True)
-    run_integration_test(steps=300)
+    run_integration_test(steps=500) # 运行 500 步 (10秒) 以覆盖完整路程

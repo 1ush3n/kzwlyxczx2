@@ -85,11 +85,12 @@ class TSN_GNN_Env:
                 return i
         raise ValueError(f"No edge found between {u} and {v}")
 
-    def step(self, next_node: int, t_offset: float) -> Tuple[torch.Tensor, int, torch.Tensor, float, bool, bool, dict]:
+    def step(self, next_node: int, t_offset: float, agv_x: float = None) -> Tuple[torch.Tensor, int, torch.Tensor, float, bool, bool, dict]:
         """
         定制化自回归 Step：传入下一跳和这跳的时间偏移
         :param next_node: Actor Routing Head 选择的节点
         :param t_offset: Actor Scheduling Head 预测的时间槽偏移量 (0.0 ~ 1.0)
+        :param agv_x: 可选，传入 AGV 当前的物理 x 坐标用于更新 RSSI
         """
         reward = self.r_cfg['step_penalty']
         terminated = False
@@ -144,8 +145,12 @@ class TSN_GNN_Env:
         self.total_delay += duration
         self.step_count += 1
         
-        # 更新漫游网络动态状态 (模拟AGV开走)
-        self.topo.update_roaming_rssi(self.step_count)
+        # 更新漫游网络动态状态 (基于传入的 agv_x 或默认步数模拟)
+        if agv_x is not None:
+            self.topo.update_roaming_rssi(agv_x)
+        else:
+            # 默认模拟：AGV 以 1.0m/step 的速度从 0 移动到 20
+            self.topo.update_roaming_rssi(float(self.step_count))
         
         # 判断到达目标
         if self.current_node == self.target_node:
