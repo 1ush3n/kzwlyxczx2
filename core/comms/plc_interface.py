@@ -59,10 +59,12 @@ class MockPLC(BasePLCInterface):
         return True
         
     def _update_network_delay(self):
-        """模拟网络波动"""
-        # 使用正态分布生成延迟，截断保证为正
-        noise = self.np_random.normal(0, self.rtt_noise_std)
-        self.current_rtt = max(0.005, self.base_rtt + noise)
+        """模拟网络波动 (长尾分布)"""
+        if self.np_random.random() < 0.05:  # 5%的概率发生网络拥塞尖峰
+            burst_delay = self.np_random.exponential(scale=0.1)
+            self.current_rtt = self.base_rtt + burst_delay
+        else:
+            self.current_rtt = self.base_rtt + max(0, self.np_random.normal(0, self.rtt_noise_std))
         
     def read_sensors(self) -> Tuple[float, float, float, float, float]:
         e, e_dot, F_ext = self.sim.get_state()
