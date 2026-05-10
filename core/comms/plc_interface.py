@@ -54,6 +54,9 @@ class MockPLC(BasePLCInterface):
         
         self.np_random = np.random.default_rng()
         
+        # 延迟模式配置 (用于 Domain Randomization)
+        self.delay_mode = env_config.get('comms', {}).get('delay_mode', 'standard')
+        
         # TSN 注入的延迟缓冲
         self.injected_delay = None
         
@@ -67,17 +70,27 @@ class MockPLC(BasePLCInterface):
         return True
         
     def _update_network_delay(self):
-        """模拟网络波动 (长尾分布) 或使用注入的延迟"""
+        """模拟网络波动 或 使用注入的延迟"""
         if self.injected_delay is not None:
             self.current_rtt = self.injected_delay
             self.injected_delay = None
             return
             
-        if self.np_random.random() < 0.05:  # 5%的概率发生网络拥塞尖峰
-            burst_delay = self.np_random.exponential(scale=0.1)
-            self.current_rtt = self.base_rtt + burst_delay
+        if self.delay_mode == 'extreme_pareto':
+            # Phase 1: 炼蛊皿极限抗压模式 (Domain Randomization)
+            # 使用 Pareto 分布制造极端的长尾延迟突刺
+            # Pareto shape parameter alpha (usually between 1 and 3 for heavy tails)
+            pareto_sample = self.np_random.pareto(1.5)
+            # 缩放至合理的极端毫秒级 (如平均几毫秒，偶尔几百毫秒)
+            burst = min(0.5, pareto_sample * 0.01) # 最大截断为 500ms
+            self.current_rtt = self.base_rtt + burst
         else:
-            self.current_rtt = self.base_rtt + max(0, self.np_random.normal(0, self.rtt_noise_std))
+            # 标准模式
+            if self.np_random.random() < 0.05:  # 5%的概率发生网络拥塞尖峰
+                burst_delay = self.np_random.exponential(scale=0.1)
+                self.current_rtt = self.base_rtt + burst_delay
+            else:
+                self.current_rtt = self.base_rtt + max(0, self.np_random.normal(0, self.rtt_noise_std))
         
     def read_sensors(self) -> Tuple[float, float, float, float, float]:
         e, e_dot, F_ext = self.sim.get_state()
