@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env.agv_compliance_env import AGVComplianceEnv
 from tsn_net.tsn_gnn_env import TSN_GNN_Env
 from agent.gnn_actor_critic import GNNActorCritic
-from training.env_wrappers import NestedGNNEnvWrapper
+from training.env_wrappers import NestedGNNEnvWrapper, GNNDelayAGVWrapper
 
 def compute_gae(next_value, rewards, masks, values, gamma=0.99, tau=0.95):
     values = values + [next_value]
@@ -39,39 +39,40 @@ def main():
         print("Warning: Phase 1 model not found, starting AGV from scratch.")
         agv_agent = PPO("MlpPolicy", agv_env, verbose=0, device=device)
         
-    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=3, hidden_dim=64).to(device)
+    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=4, hidden_dim=64).to(device)
     gnn_model_path = os.path.join("checkpoints", "phase2_gnn", "ppo_gnn_final.pth")
     if os.path.exists(gnn_model_path):
         print(f"Loading Phase 2 GNN Agent from {gnn_model_path}")
         gnn_agent.load_state_dict(torch.load(gnn_model_path))
     
-    gnn_optimizer = optim.Adam(gnn_agent.parameters(), lr=5e-5) # 协同训练使用较小的学习率
-    
     # 初始化包装器
     env = NestedGNNEnvWrapper(tsn_env, agv_env, agv_agent=agv_agent)
     
-    num_cycles = 5 # 乒乓大循环次数
-    steps_per_agv_cycle = 5000
-    episodes_per_gnn_cycle = 20
+    num_cycles = 15 # 增加乒乓大循环次数以确保深度收敛
+    steps_per_agv_cycle = 10000
+    episodes_per_gnn_cycle = 30
+    
+    gnn_optimizer = optim.Adam(gnn_agent.parameters(), lr=5e-5) # 协同训练使用较小的学习率
+    # CosineAnnealing LR decay across all 15 cycles * 30 episodes = 450 steps
+    gnn_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        gnn_optimizer, T_max=num_cycles * episodes_per_gnn_cycle, eta_min=1e-6
+    )
     
     for cycle in range(num_cycles):
         print(f"\n===== Co-Training Cycle {cycle+1}/{num_cycles} =====")
         
-        # --- Step A: 冻结 GNN, 训练 AGV ---
-        print("--- Step A: Training AGV (GNN is Frozen) ---")
-        # 在这个子阶段，我们需要 AGV 面对 GNN 产生的真实网络分布
-        # 我们通过包装器来模拟这个过程。为了适配 SB3，我们需要确保 AGV 的 step 包含 GNN 的逻辑
-        # 简单方案：直接让 AGV 在由当前 GNN 提供延迟的环境中运行
-        
-        # 修改 PLC 模式，使其接受 GNN 注入
-        agv_env.plc.delay_mode = 'standard' 
-        
-        # 定义一个简单的环境闭环函数，供 AGV 训练使用
-        # 实际上 SB3 的 learn 需要一个环境。由于我们的联合逻辑在 Wrapper 里，
-        # 我们需要在 Wrapper 里暴露一个适配 AGV 的 step 接口。
-        # 为了演示，我们这里简化为直接微调 AGV
+        # --- Step A: 冻结 GNN, 训练 AGV (使用 GNN 产生的真实延迟) ---
+        print("--- Step A: Training AGV (GNN is Frozen, using GNN delays) ---")
+        # CRITICAL FIX: 使用 GNNDelayAGVWrapper 让 AGV 针对当前 GNN 的延迟分布微调
+        # 而非使用随机标准延迟
+        agv_env = AGVComplianceEnv()
+        agv_wrapped = GNNDelayAGVWrapper(agv_env, tsn_env, gnn_agent, device)
+        # 将 agent 重新绑定到 wrapped 环境
+        agv_agent.set_env(agv_wrapped)
         agv_agent.learn(total_timesteps=steps_per_agv_cycle)
-        print("AGV fine-tuning complete.")
+        # 恢复原始环境引用
+        agv_agent.set_env(env.agv_env)
+        print(f"AGV fine-tuning complete with GNN delays.")
         
         # --- Step B: 冻结 AGV, 训练 GNN ---
         print("--- Step B: Training GNN (AGV is Frozen) ---")
@@ -88,7 +89,13 @@ def main():
                 with torch.set_grad_enabled(True):
                     h = gnn_agent.encode(obs.to(device))
                     target_node = env.tsn_env.target_node
-                    logits = gnn_agent.get_routing_logits(h, current_node, target_node, action_mask.to(device))
+                    logits = gnn_agent.get_routing_logits(h, current_node, tsn_env.target_node, action_mask.to(device))
+                    
+                    if torch.isnan(logits).any():
+                        print(f"Warning: NaN logits in Phase 3 GNN training, terminating episode.")
+                        terminated = True
+                        break
+                    
                     routing_dist = torch.distributions.Categorical(logits=logits)
                     next_node = routing_dist.sample()
                     
@@ -124,19 +131,30 @@ def main():
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
                 # 重新计算一次 loss 并反向传播
-                ratio = torch.exp(torch.stack(log_probs) - old_log_probs)
+                ratio = torch.exp(torch.clamp(torch.stack(log_probs) - old_log_probs, -20, 20))
                 surr1 = ratio * advantages
                 surr2 = torch.clamp(ratio, 1.0 - 0.2, 1.0 + 0.2) * advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
                 critic_loss = F.mse_loss(returns, torch.cat(values).squeeze())
                 
                 loss = actor_loss + 0.5 * critic_loss
-                gnn_optimizer.zero_grad()
-                loss.backward()
-                gnn_optimizer.step()
+                
+                if torch.isnan(loss):
+                    print(f"Warning: NaN loss in Phase 3 GNN training, skipping update.")
+                    gnn_optimizer.zero_grad()
+                else:
+                    gnn_optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(gnn_agent.parameters(), 0.5)
+                    gnn_optimizer.step()
                 
             if ep % 5 == 0:
                 print(f"GNN Episode {ep} - Reward: {sum(rewards):.2f}, Peak Stress: {info.get('peak_stress', 0):.1f}N")
+            
+            gnn_scheduler.step()  # CosineAnnealing LR decay per GNN episode
+            
+    # Phase 3 cycle complete, report LR
+    print(f"[LR] Cycle {cycle+1}/{num_cycles} complete: gnn_lr = {gnn_scheduler.get_last_lr()[0]:.2e}")
                 
     # 最终保存
     save_dir = os.path.join("checkpoints", "phase3_cotrain")

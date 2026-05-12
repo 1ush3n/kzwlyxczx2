@@ -78,6 +78,7 @@ target/
 .ipynb_checkpoints
 
 # IPython
+.profile
 profile_default/
 ipython_config.py
 
@@ -115,11 +116,11 @@ celerybeat.pid
 # Environments
 .env
 .venv
-env/
 venv/
-ENV/
 env.bak/
 venv.bak/
+!/env/__init__.py
+!/env/agv_compliance_env.py
 
 # Spyder project settings
 .spyderproject
@@ -152,7 +153,8 @@ cython_debug/
 .vscode/
 
 # Project specific
-images/
-outputs/
-logs/
-data/
+runs/
+_*.py
+*.htm
+*.webp
+images/多agv协同运输机翼_files/

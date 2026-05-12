@@ -8,13 +8,13 @@ class GNNActorCritic(nn.Module):
     基于 PyTorch Geometric 的自回归 Actor-Critic 智能体架构。
     严格遵守路由 -> 调度的自回归依赖。
     """
-    def __init__(self, node_dim: int = 3, edge_dim: int = 3, hidden_dim: int = 64):
+    def __init__(self, node_dim: int = 3, edge_dim: int = 4, hidden_dim: int = 64):
         super(GNNActorCritic, self).__init__()
         
         # 1. 编码器 (Encoder)
         # GATv2Conv 支持动态关注不同边（如衰减的Rssi），edge_dim 帮助边特征融入注意力计算
-        self.conv1 = GATv2Conv(node_dim, hidden_dim, edge_dim=edge_dim, add_self_loops=False)
-        self.conv2 = GATv2Conv(hidden_dim, hidden_dim, edge_dim=edge_dim, add_self_loops=False)
+        self.conv1 = GATv2Conv(node_dim, hidden_dim, edge_dim=edge_dim, add_self_loops=True)
+        self.conv2 = GATv2Conv(hidden_dim, hidden_dim, edge_dim=edge_dim, add_self_loops=True)
         
         # 2. 状态表达融合层
         self.ctx_mlp = nn.Sequential(
@@ -73,6 +73,9 @@ class GNNActorCritic(nn.Module):
         logits = self.routing_head(routing_input).squeeze(-1) # shape: [N]
         
         # 施加严苛掩码
+        if not torch.any(action_mask):
+            # 如果没有可用节点（死胡同），返回全零或抛出警告，防止 NaN
+            return torch.zeros_like(logits).fill_(-1e9)
         logits = logits.masked_fill(~action_mask, -1e9)
         
         return logits

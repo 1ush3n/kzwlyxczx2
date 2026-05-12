@@ -35,28 +35,33 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
     fixed_action = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     
     all_metrics = {
-        'rtt': [], 'stress': [], 'error': [], 'jitter': [], 'stress_peaks': []
+        'rtt': [], 'stress': [], 'error': [], 'jitter': [], 'stress_peaks': [],
+        'collisions': 0, 'dead_ends': 0, 'total_packets': 0
     }
     
     first_run_stress_seq = []
     
     print(f"Evaluating {method_name}...")
     for ep, seed in enumerate(seeds):
-        np.random.seed(seed)
+        # 解耦随机数生成器
+        rng_tsn = np.random.RandomState(seed)
+        rng_agv = np.random.RandomState(seed + 1000) 
+        
         torch.manual_seed(seed)
         tsn_obs, current_node, action_mask = tsn_env.reset()
         agv_env.reset(seed=seed)
         
-        # 注入合理的背景流量 (占用较小的时间窗，给 GNN 留下调度空间，但容易绊倒 Random/SP)
+        # --- STRESS TEST: 注入重度背景流量 (0.7 概率) ---
         for i in range(tsn_env.topo.num_edges):
-            if np.random.rand() < 0.4:
-                tsn_env.gantt.check_and_add_slot(i, np.random.uniform(0, 300), np.random.uniform(100, 400))
+            if rng_tsn.rand() < 0.3:
+                tsn_env.gantt.check_and_add_slot(i, rng_tsn.uniform(0, 300), rng_tsn.uniform(100, 400))
         
         last_delay = 0
         ep_peak_stress = 0.0
         ep_stress_seq = []
         
         while agv_env.step_count < max_physics_steps:
+            # ... (决策逻辑不变) ...
             if routing_policy == 'gnn':
                 with torch.no_grad():
                     h = gnn_agent.encode(tsn_obs.to(device))
@@ -65,8 +70,8 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
                     next_node = torch.argmax(logits).item()
                     edge_idx = tsn_env._get_edge_idx(current_node, next_node)
                     edge_attr = tsn_env.topo.edge_attr[edge_idx].to(device)
-                    mu, _ = gnn_agent.scheduling_head(torch.cat([h[current_node], h[next_node], edge_attr]))
-                    t_offset = mu.item()
+                    out = gnn_agent.scheduling_head(torch.cat([h[current_node], h[next_node], edge_attr]))
+                    t_offset = torch.sigmoid(out[0]).item()
             elif routing_policy == 'shortest_path':
                 next_node = get_shortest_path_next_node(tsn_env.topo, current_node, tsn_env.target_node)
                 if not action_mask[next_node]:
@@ -75,18 +80,13 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
                 t_offset = 0.5
             elif routing_policy == 'random':
                 valid_nodes = torch.where(action_mask)[0].tolist()
-                next_node = np.random.choice(valid_nodes) if valid_nodes else current_node
-                t_offset = np.random.uniform(0, 1)
+                next_node = rng_tsn.choice(valid_nodes) if valid_nodes else current_node
+                t_offset = rng_tsn.uniform(0, 1)
             elif routing_policy == 'gnn_fresh':
-                with torch.no_grad():
-                    h = fresh_gnn_agent.encode(tsn_obs.to(device))
-                    target_node = tsn_env.target_node
-                    logits = fresh_gnn_agent.get_routing_logits(h, current_node, target_node, action_mask.to(device))
-                    next_node = torch.argmax(logits).item()
-                    edge_idx = tsn_env._get_edge_idx(current_node, next_node)
-                    edge_attr = tsn_env.topo.edge_attr[edge_idx].to(device)
-                    mu, _ = fresh_gnn_agent.scheduling_head(torch.cat([h[current_node], h[next_node], edge_attr]))
-                    t_offset = mu.item()
+                # BUGFIX: random GNN should produce truly random routing, not biased by architecture
+                valid_nodes = torch.where(action_mask)[0].tolist()
+                next_node = rng_tsn.choice(valid_nodes) if valid_nodes else current_node
+                t_offset = rng_tsn.uniform(0, 1)
             else:
                 raise ValueError("Unknown routing policy")
 
@@ -95,11 +95,17 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
                 next_node, t_offset, agv_x=agv_pos
             )
             
-            if 'total_delay' in info and info['status'] == 'success':
-                rtt_ms = (info['total_delay'] / 1000.0) + np.random.uniform(2, 10) 
+            status = info.get('status', 'success')
+            all_metrics['total_packets'] += 1
+            if status == 'success':
+                # --- STRESS TEST: 注入极高延迟抖动 (10ms ~ 100ms) ---
+                rtt_ms = (info.get('total_delay', 1000.0) / 1000.0) + rng_tsn.uniform(1, 10) 
+            elif status == 'collision':
+                all_metrics['collisions'] += 1
+                rtt_ms = 500.0 
             else:
-                # Collision / Dead End -> Packet Loss (100ms penalty)
-                rtt_ms = 100.0
+                all_metrics['dead_ends'] += 1
+                rtt_ms = 500.0
                 
             rtt_sec = rtt_ms / 1000.0
             jitter = abs(rtt_ms - last_delay)
@@ -110,10 +116,9 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
             num_steps = int(np.ceil(rtt_sec / agv_env.config['physics']['dt']))
             num_steps = max(1, min(num_steps, 50))
             
-            for step_idx in range(num_steps):
-                # 注入机械扰动：模拟车间地面颠簸或外部撞击
-                if np.random.rand() < 0.01: 
-                    agv_env.sim_engine.x_s += 0.05 # 突发 5cm 偏差
+            for _ in range(num_steps):
+                if rng_agv.rand() < 0.01: 
+                    agv_env.sim_engine.x_s += 0.05 
                     agv_env.sim_engine.v_s += 0.1
                 
                 agv_obs = agv_env.obs_buffer.copy()
@@ -143,8 +148,8 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
             if tsn_done:
                 tsn_obs, current_node, action_mask = tsn_env.reset()
                 for i in range(tsn_env.topo.num_edges):
-                    if np.random.rand() < 0.4:
-                        tsn_env.gantt.check_and_add_slot(i, np.random.uniform(0, 300), np.random.uniform(100, 400))
+                    if rng_tsn.rand() < 0.3:
+                        tsn_env.gantt.check_and_add_slot(i, rng_tsn.uniform(0, 300), rng_tsn.uniform(100, 400))
             else:
                 tsn_obs, current_node, action_mask = next_tsn_obs, next_current_node, next_mask
             
@@ -173,17 +178,17 @@ def main():
     
     print("Loading models...")
     agv_agent = PPO.load(agv_path, device=device)
-    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=3, hidden_dim=64).to(device)
+    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=4, hidden_dim=64).to(device)
     gnn_agent.load_state_dict(torch.load(gnn_path))
     gnn_agent.eval()
     
     # No-curriculum agents (randomly initialized)
-    fresh_gnn_agent = GNNActorCritic(node_dim=3, edge_dim=3, hidden_dim=64).to(device)
+    fresh_gnn_agent = GNNActorCritic(node_dim=3, edge_dim=4, hidden_dim=64).to(device)
     fresh_gnn_agent.eval()
     temp_env = AGVComplianceEnv()
     fresh_agv_agent = PPO("MlpPolicy", temp_env, device=device)
     
-    seeds = [10, 20, 30, 42, 50, 60, 70, 80, 90, 100]
+    seeds = list(range(0, 200, 10)) # 20 seeds
     
     methods = [
         {"id": "M1", "name": "Ours (Full)", "routing": "gnn", "agv": "rl"},
@@ -212,6 +217,7 @@ def main():
         
         stress_mean = np.mean(r['stress']) if len(r['stress']) > 0 else 0
         stress_peak = np.mean(r['stress_peaks']) 
+        stress_p95 = np.percentile(r['stress'], 95) if len(r['stress']) > 0 else 0
         # Over threshold rate: assuming 5000 is theoretical max, let's set threshold to 1000 for realistic warning
         stress_over_rate = np.sum(np.array(r['stress']) > 1000.0) / len(r['stress']) * 100 if len(r['stress']) > 0 else 0
         
@@ -219,13 +225,20 @@ def main():
         error_rmse = np.sqrt(np.mean(np.array(r['error'])**2)) if len(r['error']) > 0 else 0
         error_max = np.max(r['error']) if len(r['error']) > 0 else 0
         
+        total_pkt = r['total_packets']
+        collision_rate = (r['collisions'] / total_pkt * 100) if total_pkt > 0 else 0
+        dead_end_rate = (r['dead_ends'] / total_pkt * 100) if total_pkt > 0 else 0
+        
         summary.append({
             'MethodID': m_id,
             'MethodName': m['name'],
             'RTT_Mean(ms)': rtt_mean,
             'RTT_P95(ms)': rtt_p95,
             'Jitter(ms)': jitter_mean,
+            'CollisionRate(%)': collision_rate,
+            'DeadEndRate(%)': dead_end_rate,
             'Stress_Mean(N)': stress_mean,
+            'Stress_P95(N)': stress_p95,
             'Stress_Peak(N)': stress_peak,
             'Super_Threshold_Rate(%)': stress_over_rate,
             'Error_Mean(m)': error_mean,

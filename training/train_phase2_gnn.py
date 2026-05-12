@@ -33,10 +33,15 @@ def main():
     env = NestedGNNEnvWrapper(tsn_env, agv_env)
     
     # 初始化 GNN Agent
-    agent = GNNActorCritic(node_dim=3, edge_dim=3, hidden_dim=64).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=1e-4)
+    agent = GNNActorCritic(node_dim=3, edge_dim=4, hidden_dim=64).to(device)
+    optimizer = optim.Adam(agent.parameters(), lr=5e-5)
     
-    max_episodes = 1000
+    # 学习率调度器：CosineAnnealing 从 lr 到 lr*0.1
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=2000, eta_min=5e-6
+    )
+    
+    max_episodes = 2000
     clip_param = 0.2
     ppo_epochs = 4
     
@@ -67,6 +72,11 @@ def main():
             target_node = env.tsn_env.target_node
             logits = agent.get_routing_logits(h, current_node, target_node, action_mask)
             
+            if torch.isnan(logits).any():
+                print(f"Warning: NaN logits at episode {episode}, terminating.")
+                terminated = True
+                break
+                
             routing_dist = torch.distributions.Categorical(logits=logits)
             next_node = routing_dist.sample()
             
@@ -116,21 +126,33 @@ def main():
         ppo_epochs_to_run = 1 
         
         for _ in range(ppo_epochs_to_run):
-            # 这里的 log_probs 是带有梯度的，我们直接用它
-            ratio = torch.exp(torch.stack(log_probs) - old_log_probs)
+            log_probs_tensor = torch.stack(log_probs)
+            ratio = torch.exp(torch.clamp(log_probs_tensor - old_log_probs, -20, 20))
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
             
-            # 计算新的 value 损失
             new_values = torch.cat(values).squeeze()
+            if returns.dim() != new_values.dim():
+                returns = returns.reshape_as(new_values)
             critic_loss = F.mse_loss(returns, new_values)
             
             loss = actor_loss + 0.5 * critic_loss
             
+            if torch.isnan(loss):
+                print(f"Warning: NaN loss detected at episode {episode}, skipping update.")
+                optimizer.zero_grad()
+                break
+                
             optimizer.zero_grad()
-            loss.backward() 
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(agent.parameters(), 0.5)
             optimizer.step()
+            
+        scheduler.step()  # CosineAnnealing LR decay per epsiode
+        
+        if episode % 100 == 0:
+            print(f"[LR] Episode {episode}: lr = {scheduler.get_last_lr()[0]:.2e}")
             
     torch.save(agent.state_dict(), os.path.join(save_dir, "ppo_gnn_final.pth"))
     print("Phase 2 training script structure completed.")

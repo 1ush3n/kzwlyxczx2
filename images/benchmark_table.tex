@@ -1,0 +1,12 @@
+\begin{tabular}{llrrrrrrrrrrrr}
+\toprule
+MethodID & MethodName & RTT_Mean(ms) & RTT_P95(ms) & Jitter(ms) & CollisionRate(%) & DeadEndRate(%) & Stress_Mean(N) & Stress_P95(N) & Stress_Peak(N) & Super_Threshold_Rate(%) & Error_Mean(m) & Error_RMSE(m) & Error_Max(m) \\
+\midrule
+M1 & Ours (Full) & 21.42 & 9.90 & 33.03 & 3.21 & 0.00 & 401.72 & 999.07 & 7421.17 & 4.68 & 0.08 & 0.08 & 0.21 \\
+M2 & Traditional (SP+Fixed) & 94.10 & 500.00 & 138.02 & 17.94 & 0.00 & 593.10 & 1377.02 & 7410.15 & 8.90 & 0.11 & 0.11 & 0.24 \\
+M3 & RL-Only (SP+RL) & 92.99 & 500.00 & 130.73 & 17.72 & 0.00 & 597.74 & 1434.14 & 7409.61 & 8.78 & 0.10 & 0.11 & 0.25 \\
+M4 & Random-Routing + RL & 116.54 & 500.00 & 171.72 & 22.44 & 0.00 & 609.96 & 1437.65 & 7401.22 & 9.01 & 0.11 & 0.11 & 0.21 \\
+M5 & GNN-Only (GNN+Fixed) & 23.53 & 9.92 & 35.66 & 3.64 & 0.00 & 408.84 & 888.50 & 7386.06 & 4.64 & 0.08 & 0.09 & 0.21 \\
+M6 & No-Curriculum & 122.39 & 500.00 & 165.40 & 23.62 & 0.00 & 615.59 & 1548.06 & 7491.04 & 9.63 & 0.11 & 0.11 & 0.23 \\
+\bottomrule
+\end{tabular}

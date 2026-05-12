@@ -41,8 +41,8 @@ class TSNTopology:
         self.x[7:9, 0] = 1 # AP
         self.x[9, 0] = 2 # AGV
         
-        # 边特征: [Bandwidth(Mbps), PropDelay(us), Rssi(dBm)]
-        self.edge_attr = torch.zeros((self.num_edges, 3), dtype=torch.float)
+        # 边特征: [Bandwidth(Mbps), PropDelay(us), Rssi(dBm), OccupancyRatio(0-1)]
+        self.edge_attr = torch.zeros((self.num_edges, 4), dtype=torch.float)
         
         for i in range(self.num_edges):
             u, v = self.edge_index[0, i].item(), self.edge_index[1, i].item()
@@ -58,7 +58,7 @@ class TSNTopology:
                 prop_delay = 5.0 # 无线延迟大
                 rssi = -50.0 # 初始 Rssi 良好
                 
-            self.edge_attr[i] = torch.tensor([bw, prop_delay, rssi])
+            self.edge_attr[i] = torch.tensor([bw, prop_delay, rssi, 0.0])
             
         # 全局状态 (待路由的数据流): [Src, Dst, Size(Bytes), D_max(us)]
         # 这个会在环境 reset 或 step 时动态注入

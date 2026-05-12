@@ -29,7 +29,7 @@ def main():
         return
         
     agv_agent = PPO.load(agv_path, device=device)
-    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=3, hidden_dim=64).to(device)
+    gnn_agent = GNNActorCritic(node_dim=3, edge_dim=4, hidden_dim=64).to(device)
     gnn_agent.load_state_dict(torch.load(gnn_path))
     gnn_agent.eval()
     
@@ -72,7 +72,8 @@ def main():
                 next_node, t_offset, agv_x=agv_pos
             )
             
-            if 'total_delay' in info and info['status'] == 'success':
+            status = info.get('status', 'success')
+            if 'total_delay' in info and status == 'success':
                 # 人为增加一些网络底噪，使抖动可视化更明显
                 rtt_ms = (info['total_delay'] / 1000.0) + np.random.uniform(2, 10) 
                 rtt_sec = rtt_ms / 1000.0

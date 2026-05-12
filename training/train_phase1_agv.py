@@ -60,7 +60,7 @@ def main():
 
     # 开始训练
     print("Training started... Check tensorboard using `tensorboard --logdir ./runs/`")
-    model.learn(total_timesteps=100000, callback=eval_callback)
+    model.learn(total_timesteps=200000, callback=eval_callback)
     
     # 保存最终模型
     model.save(os.path.join(save_dir, "ppo_agv_final"))
