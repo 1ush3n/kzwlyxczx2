@@ -15,7 +15,7 @@ class TSN_GNN_Env:
     基于 PyTorch Geometric 的 TSN 调度与路由环境。
     采用了脱离标准 Gym.Box 的 Custom Tensor 接口，以便支持 Autoregressive Action 和 Dynamic Action Mask。
     """
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, randomize_ap: bool = False):
         if config_path is None:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             config_path = os.path.join(base_dir, 'config', 'tsn_env_config.yaml')
@@ -26,7 +26,8 @@ class TSN_GNN_Env:
         self.topo = TSNTopology(
             num_nodes=self.config['topology']['num_nodes'],
             num_ap=self.config['topology']['num_ap'],
-            agv_idx=self.config['topology']['agv_node_idx']
+            agv_idx=self.config['topology']['agv_node_idx'],
+            randomize_ap=randomize_ap
         )
         
         self.gantt = GanttChartManager(

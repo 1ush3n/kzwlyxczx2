@@ -19,7 +19,7 @@ class AGVComplianceEnv(gym.Env):
     """
     metadata = {"render_modes": ["human", None]}
 
-    def __init__(self, config_path=None, render_mode=None):
+    def __init__(self, config_path=None, render_mode=None, proposal_config=None):
         super().__init__()
 
         if config_path is None:
@@ -30,6 +30,8 @@ class AGVComplianceEnv(gym.Env):
             self.config = yaml.safe_load(f)
 
         self.render_mode = render_mode
+        # 提案开关 (eval-time 注入需配合重新训练; Phase 3 训练时传入 momentum_max_delta=0.15)
+        self.proposal_config = proposal_config or {}
 
         # 物理引擎
         self.sim_engine = AGVSystemSim(self.config)
@@ -117,6 +119,20 @@ class AGVComplianceEnv(gym.Env):
     def step(self, action):
         delta_M, delta_B, delta_K = action
 
+        # 提案支持: 动量动作平滑 (Momentum Action Smoothing)
+        pc = self.proposal_config
+        if 'momentum_max_delta' in pc:
+            d = pc['momentum_max_delta']
+            delta_M = np.clip(delta_M, self.prev_action[0]-d, self.prev_action[0]+d)
+            delta_B = np.clip(delta_B, self.prev_action[1]-d, self.prev_action[1]+d)
+            delta_K = np.clip(delta_K, self.prev_action[2]-d, self.prev_action[2]+d)
+        if 'action_smooth_weight' in pc:
+            w = pc['action_smooth_weight']
+            delta_M = w*delta_M + (1-w)*self.prev_action[0]
+            delta_B = w*delta_B + (1-w)*self.prev_action[1]
+            delta_K = w*delta_K + (1-w)*self.prev_action[2]
+        action = np.array([delta_M, delta_B, delta_K], dtype=np.float32)
+
         # 动作映射: 归一化[-1,1] → 实际阻抗参数
         Md = max(self.M_base + delta_M * self.M_delta, 1e-4)
         Bd = max(self.B_base + delta_B * self.B_delta, 1e-4)
@@ -140,23 +156,36 @@ class AGVComplianceEnv(gym.Env):
         new_obs_row = np.array([e, e_dot, F_ext, rtt, delta_x_cmd], dtype=np.float32)
         self.obs_buffer.append(new_obs_row)
 
-        # 计算奖励
-        reward = (
-            -self.alpha * (F_ext / self.F_max) ** 2
+        # 提案支持: 有效 F_max (用于奖励归一化)
+        eff_F_max = pc.get('F_max_override', self.F_max)
+
+        # 计算奖励 (含可选风险敏感增强)
+        reward_base = (
+            -self.alpha * (F_ext / eff_F_max) ** 2
             - self.beta * (e / self.e_max) ** 2
             - self.omega_3 * np.sum((action - self.prev_action) ** 2)
         )
 
-        self.prev_action = action.copy()
+        # 提案支持: 风险敏感增强 (Risk-Sensitive Reward)
+        if 'risk_threshold' in pc:
+            threshold = pc['risk_threshold']
+            boost = pc.get('risk_boost', 3.0)
+            abs_F = abs(F_ext)
+            if abs_F > threshold:
+                risk_factor = 1.0 + boost * (abs_F - threshold) / (eff_F_max - threshold)
+                reward_base *= risk_factor
+
+        self.prev_action = np.array([delta_M, delta_B, delta_K], dtype=np.float32)
 
         # 终止/截断条件
-        terminated = abs(F_ext) > self.F_max * 3 or abs(e) > self.e_max * 10
+        term_F_max = pc.get('term_F_max', eff_F_max * 3)
+        terminated = abs(F_ext) > term_F_max or abs(e) > self.e_max * 10
         truncated = self.step_count >= self.max_steps
 
         obs = self._get_obs()
         info = self._get_info()
 
-        return obs, float(reward), terminated, truncated, info
+        return obs, float(reward_base), terminated, truncated, info
 
     @property
     def unwrapped(self):

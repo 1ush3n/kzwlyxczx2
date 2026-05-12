@@ -81,7 +81,17 @@ class NestedGNNEnvWrapper:
         
     def reset(self, seed=None):
         obs, info = self.agv_env.reset(seed=seed)
-        return self.tsn_env.reset()
+        tsn_obs = self.tsn_env.reset()
+        # S2: 训练时也注入背景流量，让 GNN 学会在拥塞下路由
+        self._inject_bg_traffic()
+        return tsn_obs
+    
+    def _inject_bg_traffic(self):
+        bg_prob = np.random.uniform(0.1, 0.4)
+        for i in range(self.tsn_env.topo.num_edges):
+            if np.random.rand() < bg_prob:
+                self.tsn_env.gantt.check_and_add_slot(
+                    i, np.random.uniform(0, 300), np.random.uniform(50, 400))
         
     def step(self, next_node: int, t_offset: float):
         # 获取物理层坐标同步
@@ -90,6 +100,11 @@ class NestedGNNEnvWrapper:
         obs, current_node, mask, reward, terminated, truncated, info = self.tsn_env.step(
             next_node, t_offset, agv_x=agv_pos
         )
+        
+        # 初始化默认值，防止碰撞时 info 中缺少这些键
+        info.setdefault('peak_stress', float('nan'))
+        info.setdefault('stress_penalty', 0.0)
+        info.setdefault('stress_weight', 0)
         
         if 'total_delay' in info and info.get('status', 'success') == 'success':
             rtt_sec = info['total_delay'] / 1e6
@@ -128,7 +143,7 @@ class NestedGNNEnvWrapper:
             elif normalized_stress < 0.10: # 200N <= peak_stress < 500N，警戒区间
                 stress_weight = 12.0
             else:                          # peak_stress >= 500N，危险区间
-                stress_weight = 20.0       # 加倍惩罚
+                stress_weight = 50.0       # 极致惩罚，让 GNN 高度厌恶高风险路径
                 
             stress_penalty = - (normalized_stress ** 2) * stress_weight
             

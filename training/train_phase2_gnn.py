@@ -28,7 +28,7 @@ def main():
     print(f"Using device: {device}")
     
     # 初始化嵌套环境
-    tsn_env = TSN_GNN_Env()
+    tsn_env = TSN_GNN_Env(randomize_ap=True)  # S1: 训练时随机化 AP 位置
     agv_env = AGVComplianceEnv()
     env = NestedGNNEnvWrapper(tsn_env, agv_env)
     
@@ -38,10 +38,10 @@ def main():
     
     # 学习率调度器：CosineAnnealing 从 lr 到 lr*0.1
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=2000, eta_min=5e-6
+        optimizer, T_max=1000, eta_min=5e-6
     )
     
-    max_episodes = 2000
+    max_episodes = 1000
     clip_param = 0.2
     ppo_epochs = 4
     

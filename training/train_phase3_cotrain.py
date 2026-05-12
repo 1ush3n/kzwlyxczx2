@@ -27,7 +27,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. 初始化环境
-    tsn_env = TSN_GNN_Env()
+    tsn_env = TSN_GNN_Env(randomize_ap=True)  # S1: 训练时随机化 AP 位置
     agv_env = AGVComplianceEnv()
     
     # 2. 加载预训练模型
@@ -48,8 +48,8 @@ def main():
     # 初始化包装器
     env = NestedGNNEnvWrapper(tsn_env, agv_env, agv_agent=agv_agent)
     
-    num_cycles = 15 # 增加乒乓大循环次数以确保深度收敛
-    steps_per_agv_cycle = 10000
+    num_cycles = 10 # 10 循环足以收敛 (此前 12-13 已稳定)
+    steps_per_agv_cycle = 5000  # 从 10000 减半，AGV 已充分预训练
     episodes_per_gnn_cycle = 30
     
     gnn_optimizer = optim.Adam(gnn_agent.parameters(), lr=5e-5) # 协同训练使用较小的学习率
@@ -61,11 +61,14 @@ def main():
     for cycle in range(num_cycles):
         print(f"\n===== Co-Training Cycle {cycle+1}/{num_cycles} =====")
         
-        # --- Step A: 冻结 GNN, 训练 AGV (使用 GNN 产生的真实延迟) ---
-        print("--- Step A: Training AGV (GNN is Frozen, using GNN delays) ---")
-        # CRITICAL FIX: 使用 GNNDelayAGVWrapper 让 AGV 针对当前 GNN 的延迟分布微调
-        # 而非使用随机标准延迟
-        agv_env = AGVComplianceEnv()
+        # --- Step A: 冻结 GNN, 训练 AGV (使用 GNN 产生的真实延迟 + momentum约束) ---
+        print("--- Step A: Training AGV (GNN Frozen, GNN delays, momentum=0.15) ---")
+        # 关键优化: AGV 在 momentum 约束下训练，学会平滑阻抗调节
+        agv_env = AGVComplianceEnv(proposal_config={
+            'momentum_max_delta': 0.15,
+            'risk_threshold': 2000,       # 2000N 以上施加风险敏感惩罚
+            'risk_boost': 2.0,            # 惩罚放大系数
+        })
         agv_wrapped = GNNDelayAGVWrapper(agv_env, tsn_env, gnn_agent, device)
         # 将 agent 重新绑定到 wrapped 环境
         agv_agent.set_env(agv_wrapped)
@@ -149,7 +152,10 @@ def main():
                     gnn_optimizer.step()
                 
             if ep % 5 == 0:
-                print(f"GNN Episode {ep} - Reward: {sum(rewards):.2f}, Peak Stress: {info.get('peak_stress', 0):.1f}N")
+                status = info.get('status', '?')
+                peak = info.get('peak_stress', 0)
+                peak_str = f"{peak:.1f}N" if not np.isnan(peak) else "N/A(no physics)"
+                print(f"GNN Episode {ep} - Reward: {sum(rewards):.2f}, Peak Stress: {peak_str}, Status: {status}")
             
             gnn_scheduler.step()  # CosineAnnealing LR decay per GNN episode
             

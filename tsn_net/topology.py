@@ -7,16 +7,22 @@ class TSNTopology:
     TSN 网络拓扑结构管理器，负责生成并维护 PyG 的 Data 对象。
     包含节点负载演化以及 AP 漫游衰减（动态边特征）。
     """
-    def __init__(self, num_nodes: int, num_ap: int, agv_idx: int):
+    def __init__(self, num_nodes: int, num_ap: int, agv_idx: int, randomize_ap: bool = False):
         self.num_nodes = num_nodes
         self.num_ap = num_ap
         self.agv_idx = agv_idx
         
-        # 物理位置定义: {node_idx: (x, y)}
-        # 假设车间走廊长 20m, AP1 在 5m 处, AP2 在 15m 处
+        # S1: AP 位置随机化，提升 GNN 对不同 RSSI 衰减曲线的泛化能力
+        if randomize_ap:
+            ap1_x = float(np.random.uniform(3, 8))     # AP1 在 3-8m
+            ap2_x = float(np.random.uniform(12, 17))   # AP2 在 12-17m
+        else:
+            ap1_x = 5.0
+            ap2_x = 15.0
+        
         self.ap_coords = {
-            7: (5.0, 2.0),  # AP1
-            8: (15.0, 2.0)  # AP2
+            7: (ap1_x, 2.0),  # AP1
+            8: (ap2_x, 2.0)  # AP2
         }
         
         # 节点特征: [Type, CpuLoad, QueueLength]
