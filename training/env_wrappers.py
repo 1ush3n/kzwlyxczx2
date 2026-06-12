@@ -44,7 +44,7 @@ class GNNDelayAGVWrapper(gym.Wrapper):
                     torch.cat([h[tsn_curr], h[next_node], edge_attr]))
                 t_offset = torch.sigmoid(out[0]).item()
 
-            agv_pos = self.env.sim_engine.x_s
+            agv_pos = self.env.current_snapshot.slave_position
             next_obs, next_curr, next_mask, _, done, _, info = self.tsn_env.step(
                 next_node, t_offset, agv_x=agv_pos)
 
@@ -95,7 +95,7 @@ class NestedGNNEnvWrapper:
         
     def step(self, next_node: int, t_offset: float):
         # 获取物理层坐标同步
-        agv_pos = self.agv_env.sim_engine.x_s
+        agv_pos = self.agv_env.current_snapshot.slave_position
         
         obs, current_node, mask, reward, terminated, truncated, info = self.tsn_env.step(
             next_node, t_offset, agv_x=agv_pos

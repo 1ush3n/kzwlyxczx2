@@ -123,7 +123,7 @@ def main():
                 obs, current_node, action_mask = next_obs, next_current_node, next_mask
             
             # GNN PPO 更新 (单次梯度下降以保持稳定性)
-            if len(rewards) > 0:
+            if len(rewards) > 1:  # 跳过单步collision/dead_end (无法计算std→NaN)
                 with torch.no_grad():
                     next_val = gnn_agent.get_value(gnn_agent.encode(obs.to(device))).detach()
                     returns = compute_gae(next_val, rewards, masks, [v.detach() for v in values])

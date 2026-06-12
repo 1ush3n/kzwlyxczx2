@@ -1,192 +1,279 @@
-import os
-import yaml
-import numpy as np
+from __future__ import annotations
+
 from collections import deque
+from pathlib import Path
+from typing import Any
+
 import gymnasium as gym
+import numpy as np
 from gymnasium import spaces
 
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from core.comms.config import PROJECT_ROOT, load_protocol_config, load_yaml_mapping
+from core.comms.models import PLCCommunicationError, PLCSnapshot
+from core.comms.plc_interface import BasePLCInterface, MockPLC, ModbusTCPPLC
 from core.physics.agv_kinematics import AGVSystemSim
-from core.comms.plc_interface import MockPLC
 
 
 class AGVComplianceEnv(gym.Env):
-    """
-    AGV 柔顺控制强化学习环境 (Gymnasium 标准接口)
-    遵循三层解耦架构: RL环境层 → 通信抽象层 → 物理仿真引擎层
-    """
+    """AGV 柔顺控制环境：强化学习层仅依赖 PLC 通信抽象。"""
+
     metadata = {"render_modes": ["human", None]}
 
-    def __init__(self, config_path=None, render_mode=None, proposal_config=None):
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        render_mode: str | None = None,
+        proposal_config: dict[str, Any] | None = None,
+        plc: BasePLCInterface | None = None,
+    ):
         super().__init__()
 
-        if config_path is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            config_path = os.path.join(base_dir, 'config', 'agv_env_config.yaml')
-
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        resolved_config_path = (
+            Path(config_path).resolve()
+            if config_path is not None
+            else PROJECT_ROOT / "config" / "agv_env_config.yaml"
+        )
+        self.config = load_yaml_mapping(resolved_config_path)
         self.render_mode = render_mode
-        # 提案开关 (eval-time 注入需配合重新训练; Phase 3 训练时传入 momentum_max_delta=0.15)
         self.proposal_config = proposal_config or {}
 
-        # 物理引擎
-        self.sim_engine = AGVSystemSim(self.config)
+        self.plc = plc or self._build_plc()
+        # 保留该属性供既有实验脚本注入物理扰动；Modbus 模式下为 None。
+        self.sim_engine = getattr(self.plc, "sim", None)
+        self.current_snapshot = PLCSnapshot(
+            md=float(self.config["impedance"]["M_base"]),
+            bd=float(self.config["impedance"]["B_base"]),
+            kd=float(self.config["impedance"]["K_base"]),
+            connected=False,
+        )
+        self._communication_failed = False
 
-        # 通信接口
-        protocol = self.config.get('comms', {}).get('protocol', 'mock')
-        if protocol == 'modbus_tcp':
-            from core.comms.plc_interface import ModbusTCP_PLC
-            self.plc = ModbusTCP_PLC(self.sim_engine, self.config)
-        else:
-            self.plc = MockPLC(self.sim_engine, self.config)
-
-        # 观测空间: 帧堆叠 [k=4, 5] (e, e_dot, F_ext, tau, delta_x_cmd)
-        self.k = self.config['rl']['frame_stack_k']
+        self.k = int(self.config["rl"]["frame_stack_k"])
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf,
+            low=-np.inf,
+            high=np.inf,
             shape=(self.k, 5),
-            dtype=np.float32
+            dtype=np.float32,
         )
-
-        # 动作空间: [delta_M, delta_B, delta_K] ∈ [-1, 1]^3
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0,
+            low=-1.0,
+            high=1.0,
             shape=(3,),
-            dtype=np.float32
+            dtype=np.float32,
         )
 
-        # 内部状态
-        self.obs_buffer = deque(maxlen=self.k)
+        self.obs_buffer: deque[np.ndarray] = deque(maxlen=self.k)
         self.prev_action = np.zeros(3, dtype=np.float32)
         self.step_count = 0
         self.max_steps = 500
 
-        # 奖励参数
-        self.alpha = self.config['rl']['alpha']
-        self.beta = self.config['rl']['beta']
-        self.omega_3 = self.config['rl']['omega_3']
+        self.alpha = float(self.config["rl"]["alpha"])
+        self.beta = float(self.config["rl"]["beta"])
+        self.omega_3 = float(self.config["rl"]["omega_3"])
 
-        # 阻抗参数映射基准
-        self.M_base = self.config['impedance']['M_base']
-        self.B_base = self.config['impedance']['B_base']
-        self.K_base = self.config['impedance']['K_base']
-        self.M_delta = self.config['impedance']['M_delta_max']
-        self.B_delta = self.config['impedance']['B_delta_max']
-        self.K_delta = self.config['impedance']['K_delta_max']
+        self.M_base = float(self.config["impedance"]["M_base"])
+        self.B_base = float(self.config["impedance"]["B_base"])
+        self.K_base = float(self.config["impedance"]["K_base"])
+        self.M_delta = float(self.config["impedance"]["M_delta_max"])
+        self.B_delta = float(self.config["impedance"]["B_delta_max"])
+        self.K_delta = float(self.config["impedance"]["K_delta_max"])
 
-        # 归一化参数
-        self.F_max = self.config['rl']['F_max']
-        self.e_max = self.config['rl']['e_max']
+        self.F_max = float(self.config["rl"]["F_max"])
+        self.e_max = float(self.config["rl"]["e_max"])
 
-    def _get_obs(self):
-        return np.array(self.obs_buffer, dtype=np.float32)
+    def _build_plc(self) -> BasePLCInterface:
+        protocol = str(self.config.get("comms", {}).get("protocol", "mock"))
+        if protocol == "modbus_tcp":
+            protocol_path = Path(
+                str(
+                    self.config["comms"].get(
+                        "protocol_config_path",
+                        "config/industrial_protocols.yaml",
+                    )
+                )
+            )
+            if not protocol_path.is_absolute():
+                protocol_path = PROJECT_ROOT / protocol_path
+            protocol_config = load_protocol_config(protocol_path)
+            return ModbusTCPPLC(self.config, protocol_config)
+        if protocol != "mock":
+            raise ValueError(f"不支持的 PLC 协议: {protocol}")
+        return MockPLC(AGVSystemSim(self.config), self.config)
 
-    def _get_info(self):
-        e, e_dot, F_ext = self.sim_engine.get_state()
+    def _get_obs(self) -> np.ndarray:
+        # 输出形状: [k, 5]
+        return np.asarray(self.obs_buffer, dtype=np.float32)
+
+    def _get_info(self, snapshot: PLCSnapshot) -> dict[str, Any]:
         return {
-            'error': float(e),
-            'e_dot': float(e_dot),
-            'F_ext': float(F_ext),
-            'Md': float(self.plc.current_M),
-            'Bd': float(self.plc.current_B),
-            'Kd': float(self.plc.current_K),
+            "error": float(snapshot.error),
+            "e_dot": float(snapshot.error_rate),
+            "F_ext": float(snapshot.external_force),
+            "Md": float(snapshot.md),
+            "Bd": float(snapshot.bd),
+            "Kd": float(snapshot.kd),
+            "plc_connected": bool(snapshot.connected),
+            "plc_status": int(snapshot.status),
+            "plc_alarm": int(snapshot.alarm),
+            "control_mode": int(snapshot.control_mode),
         }
 
-    def reset(self, seed=None, options=None):
+    def reset(
+        self,
+        seed: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
-        self.sim_engine.reset()
-        self.plc.set_rng(self.np_random)
-        self.plc.connect()
+        del options
         self.prev_action = np.zeros(3, dtype=np.float32)
         self.step_count = 0
+        self._communication_failed = False
 
-        e, e_dot, F_ext = self.sim_engine.get_state()
-        rtt, delta_x = self.plc.read_sensors()[3], self.plc.read_sensors()[4]
-        initial_obs_row = np.array([e, e_dot, F_ext, rtt, delta_x], dtype=np.float32)
+        try:
+            self.current_snapshot = self.plc.reset(seed)
+        except PLCCommunicationError:
+            self.current_snapshot = PLCSnapshot.disconnected(self.current_snapshot)
+            self._communication_failed = True
 
+        initial_obs_row = self._snapshot_to_observation(self.current_snapshot)
         self.obs_buffer.clear()
         for _ in range(self.k):
             self.obs_buffer.append(initial_obs_row.copy())
 
-        obs = self._get_obs()
-        info = self._get_info()
-        return obs, info
+        return self._get_obs(), self._get_info(self.current_snapshot)
 
-    def step(self, action):
-        delta_M, delta_B, delta_K = action
+    def step(
+        self,
+        action: np.ndarray,
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        action = np.asarray(action, dtype=np.float32)
+        assert action.shape == (3,), f"动作形状必须为 [3]，实际为 {action.shape}"
 
-        # 提案支持: 动量动作平滑 (Momentum Action Smoothing)
-        pc = self.proposal_config
-        if 'momentum_max_delta' in pc:
-            d = pc['momentum_max_delta']
-            delta_M = np.clip(delta_M, self.prev_action[0]-d, self.prev_action[0]+d)
-            delta_B = np.clip(delta_B, self.prev_action[1]-d, self.prev_action[1]+d)
-            delta_K = np.clip(delta_K, self.prev_action[2]-d, self.prev_action[2]+d)
-        if 'action_smooth_weight' in pc:
-            w = pc['action_smooth_weight']
-            delta_M = w*delta_M + (1-w)*self.prev_action[0]
-            delta_B = w*delta_B + (1-w)*self.prev_action[1]
-            delta_K = w*delta_K + (1-w)*self.prev_action[2]
-        action = np.array([delta_M, delta_B, delta_K], dtype=np.float32)
+        if self._communication_failed:
+            return self._communication_failure_transition()
 
-        # 动作映射: 归一化[-1,1] → 实际阻抗参数
-        Md = max(self.M_base + delta_M * self.M_delta, 1e-4)
-        Bd = max(self.B_base + delta_B * self.B_delta, 1e-4)
-        Kd = max(self.K_base + delta_K * self.K_delta, 1e-4)
+        delta_M, delta_B, delta_K = self._smooth_action(action)
 
-        # 下发阻抗参数至PLC
-        self.plc.write_impedance(Md, Bd, Kd)
+        md = max(self.M_base + delta_M * self.M_delta, 1e-4)
+        bd = max(self.B_base + delta_B * self.B_delta, 1e-4)
+        kd = max(self.K_base + delta_K * self.K_delta, 1e-4)
 
-        # 推进物理仿真一步 (主车匀速1.5 m/s)
-        master_v_cmd = 1.5
-        self.plc.step_simulation(master_v_cmd)
+        try:
+            self.plc.write_impedance(md, bd, kd)
+            self.current_snapshot = self.plc.step_simulation(master_v_cmd=1.5)
+        except PLCCommunicationError:
+            self.current_snapshot = PLCSnapshot.disconnected(self.current_snapshot)
+            self._communication_failed = True
+            return self._communication_failure_transition()
+
         self.step_count += 1
+        self.obs_buffer.append(self._snapshot_to_observation(self.current_snapshot))
 
-        # 读取当前状态
-        e, e_dot, F_ext = self.sim_engine.get_state()
-        sensors = self.plc.read_sensors()
-        rtt = sensors[3]
-        delta_x_cmd = sensors[4]
-
-        # 更新观测缓冲区
-        new_obs_row = np.array([e, e_dot, F_ext, rtt, delta_x_cmd], dtype=np.float32)
-        self.obs_buffer.append(new_obs_row)
-
-        # 提案支持: 有效 F_max (用于奖励归一化)
-        eff_F_max = pc.get('F_max_override', self.F_max)
-
-        # 计算奖励 (含可选风险敏感增强)
-        reward_base = (
-            -self.alpha * (F_ext / eff_F_max) ** 2
-            - self.beta * (e / self.e_max) ** 2
-            - self.omega_3 * np.sum((action - self.prev_action) ** 2)
+        effective_action = np.array(
+            [delta_M, delta_B, delta_K],
+            dtype=np.float32,
         )
+        reward = self._calculate_reward(effective_action)
+        self.prev_action = effective_action
 
-        # 提案支持: 风险敏感增强 (Risk-Sensitive Reward)
-        if 'risk_threshold' in pc:
-            threshold = pc['risk_threshold']
-            boost = pc.get('risk_boost', 3.0)
-            abs_F = abs(F_ext)
-            if abs_F > threshold:
-                risk_factor = 1.0 + boost * (abs_F - threshold) / (eff_F_max - threshold)
-                reward_base *= risk_factor
-
-        self.prev_action = np.array([delta_M, delta_B, delta_K], dtype=np.float32)
-
-        # 终止/截断条件
-        term_F_max = pc.get('term_F_max', eff_F_max * 3)
-        terminated = abs(F_ext) > term_F_max or abs(e) > self.e_max * 10
+        effective_f_max = float(
+            self.proposal_config.get("F_max_override", self.F_max)
+        )
+        termination_force = float(
+            self.proposal_config.get("term_F_max", effective_f_max * 3)
+        )
+        terminated = (
+            abs(self.current_snapshot.external_force) > termination_force
+            or abs(self.current_snapshot.error) > self.e_max * 10
+        )
         truncated = self.step_count >= self.max_steps
 
-        obs = self._get_obs()
-        info = self._get_info()
+        return (
+            self._get_obs(),
+            float(reward),
+            terminated,
+            truncated,
+            self._get_info(self.current_snapshot),
+        )
 
-        return obs, float(reward_base), terminated, truncated, info
+    def close(self) -> None:
+        self.plc.close()
+
+    def _smooth_action(self, action: np.ndarray) -> tuple[float, float, float]:
+        delta_M, delta_B, delta_K = (float(value) for value in action)
+        config = self.proposal_config
+
+        if "momentum_max_delta" in config:
+            max_delta = float(config["momentum_max_delta"])
+            delta_M = float(
+                np.clip(
+                    delta_M,
+                    self.prev_action[0] - max_delta,
+                    self.prev_action[0] + max_delta,
+                )
+            )
+            delta_B = float(
+                np.clip(
+                    delta_B,
+                    self.prev_action[1] - max_delta,
+                    self.prev_action[1] + max_delta,
+                )
+            )
+            delta_K = float(
+                np.clip(
+                    delta_K,
+                    self.prev_action[2] - max_delta,
+                    self.prev_action[2] + max_delta,
+                )
+            )
+
+        if "action_smooth_weight" in config:
+            weight = float(config["action_smooth_weight"])
+            delta_M = weight * delta_M + (1 - weight) * float(self.prev_action[0])
+            delta_B = weight * delta_B + (1 - weight) * float(self.prev_action[1])
+            delta_K = weight * delta_K + (1 - weight) * float(self.prev_action[2])
+
+        return delta_M, delta_B, delta_K
+
+    def _calculate_reward(self, action: np.ndarray) -> float:
+        snapshot = self.current_snapshot
+        effective_f_max = float(
+            self.proposal_config.get("F_max_override", self.F_max)
+        )
+        reward = (
+            -self.alpha * (snapshot.external_force / effective_f_max) ** 2
+            - self.beta * (snapshot.error / self.e_max) ** 2
+            - self.omega_3 * float(np.sum((action - self.prev_action) ** 2))
+        )
+
+        if "risk_threshold" in self.proposal_config:
+            threshold = float(self.proposal_config["risk_threshold"])
+            boost = float(self.proposal_config.get("risk_boost", 3.0))
+            absolute_force = abs(snapshot.external_force)
+            if absolute_force > threshold:
+                denominator = max(effective_f_max - threshold, 1e-6)
+                risk_factor = 1.0 + boost * (absolute_force - threshold) / denominator
+                reward *= risk_factor
+        return float(reward)
+
+    def _communication_failure_transition(
+        self,
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        if not self.obs_buffer:
+            row = self._snapshot_to_observation(self.current_snapshot)
+            for _ in range(self.k):
+                self.obs_buffer.append(row.copy())
+        else:
+            self.obs_buffer.append(self.obs_buffer[-1].copy())
+        info = self._get_info(self.current_snapshot)
+        info["communication_failure"] = True
+        return self._get_obs(), -100.0, True, False, info
+
+    @staticmethod
+    def _snapshot_to_observation(snapshot: PLCSnapshot) -> np.ndarray:
+        # PLC快照 -> 单帧观测形状: [5]
+        return np.array(snapshot.sensor_tuple(), dtype=np.float32)
 
     @property
-    def unwrapped(self):
+    def unwrapped(self) -> AGVComplianceEnv:
         return self

@@ -1,8 +1,8 @@
 metric,value
 total_episodes,200
-success_rate(%),77.00
-collision_rate(%),23.00
+success_rate(%),86.00
+collision_rate(%),14.00
 dead_end_rate(%),0.00
 avg_delay_ms,0.18
 p95_delay_ms,0.18
-avg_steps,4.54
+avg_steps,4.88

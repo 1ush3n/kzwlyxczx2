@@ -24,6 +24,7 @@ rl:
   omega_3: 0.8                # 奖励函数: 动作抖动(平滑)惩罚权重
 
 comms:
-  protocol: "mock"            # 可选: "mock" 或 "modbus_tcp"
+  protocol: "mock"            # 可选: "mock" 或 "modbus_tcp"，训练默认使用 mock
+  protocol_config_path: "config/industrial_protocols.yaml"
   base_rtt: 0.05              # 基础网络延迟 (秒)
   rtt_noise_std: 0.01         # 延迟抖动标准差 (秒)

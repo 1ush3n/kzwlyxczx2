@@ -1,0 +1,75 @@
+runtime:
+  project_root: null
+  agv_config_path: "config/agv_env_config.yaml"
+  startup_timeout_sec: 10.0
+
+modbus:
+  host: "127.0.0.1"
+  bind_host: "127.0.0.1"
+  port: 1502
+  device_id: 1
+  timeout_sec: 1.0
+  retries: 2
+  poll_interval_sec: 0.01
+
+opcua:
+  endpoint: "opc.tcp://127.0.0.1:4840/apal/cps/"
+  namespace_uri: "urn:apal:cps:agv"
+  application_uri: "urn:apal:cps:opcua:server"
+  server_name: "APAL CPS OPC UA Gateway"
+  poll_interval_sec: 0.05
+  security_mode: "development"
+  certificates:
+    directory: ".runtime/certs"
+    server_certificate: "server_cert.der"
+    server_private_key: "server_key.pem"
+    client_certificate: "client_cert.der"
+    client_private_key: "client_key.pem"
+
+safety:
+  watchdog_timeout_sec: 0.3
+  watchdog_poll_sec: 0.02
+
+tsn_runtime:
+  gnn_checkpoint: "checkpoints/phase2_gnn/ppo_gnn_final.pth"
+  route:
+    minimum_margin_db: 5.0
+    switch_cooldown_sec: 1.0
+
+mapek:
+  enabled: true
+  cycle_sec: 0.05
+  database_path: ".runtime/twin/twin_history.sqlite3"
+  aas_path: ".runtime/twin/AGV1.aas.json"
+  export_directory: ".runtime/twin"
+  aas_update_sec: 1.0
+  thresholds:
+    ap_fail_dbm: -80.0
+    ap_fail_samples: 3
+    ap_recover_dbm: -72.0
+    ap_recover_samples: 10
+    rtt_spike_sec: 0.15
+    rtt_spike_samples: 3
+    rtt_recover_sec: 0.08
+    rtt_recover_samples: 10
+    stress_warning_n: 800.0
+    stress_warning_samples: 2
+    stress_critical_n: 1500.0
+    plc_stale_sec: 0.3
+    model_residual_ratio: 0.10
+    model_residual_samples: 5
+    healthy_samples: 10
+  route:
+    minimum_margin_db: 5.0
+  adaptation:
+    restore_rate: 0.10
+
+aas:
+  aas_id: "urn:apal:cps:aas:agv1"
+  global_asset_id: "urn:apal:cps:asset:agv1"
+  manufacturer: "APAL CPS Course Project"
+  technical_data:
+    control_frequency_hz: 50
+    field_protocol: "Modbus TCP"
+    information_protocol: "OPC UA"
+  documentation: "AGV 主从协同控制、网络与健康状态的轻量级数字孪生快照。"

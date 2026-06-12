@@ -28,7 +28,7 @@ def get_shortest_path_next_node(topo, current_node, target_node):
     except nx.NetworkXNoPath:
         return current_node
 
-def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_physics_steps=200):
+def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_physics_steps=200, bg_prob=0.3, jitter_range=(1, 10)):
     tsn_env = TSN_GNN_Env()
     agv_env = AGVComplianceEnv()
     
@@ -51,9 +51,9 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
         tsn_obs, current_node, action_mask = tsn_env.reset()
         agv_env.reset(seed=seed)
         
-        # --- STRESS TEST: 注入重度背景流量 (0.7 概率) ---
+        # --- STRESS TEST: 注入背景流量 ---
         for i in range(tsn_env.topo.num_edges):
-            if rng_tsn.rand() < 0.3:
+            if rng_tsn.rand() < bg_prob:
                 tsn_env.gantt.check_and_add_slot(i, rng_tsn.uniform(0, 300), rng_tsn.uniform(100, 400))
         
         last_delay = 0
@@ -99,7 +99,7 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
             all_metrics['total_packets'] += 1
             if status == 'success':
                 # --- STRESS TEST: 注入极高延迟抖动 (10ms ~ 100ms) ---
-                rtt_ms = (info.get('total_delay', 1000.0) / 1000.0) + rng_tsn.uniform(1, 10) 
+                rtt_ms = (info.get('total_delay', 1000.0) / 1000.0) + rng_tsn.uniform(*jitter_range) 
             elif status == 'collision':
                 all_metrics['collisions'] += 1
                 rtt_ms = 500.0 
@@ -148,7 +148,7 @@ def run_evaluation(method_name, routing_policy, agv_policy, seeds, device, max_p
             if tsn_done:
                 tsn_obs, current_node, action_mask = tsn_env.reset()
                 for i in range(tsn_env.topo.num_edges):
-                    if rng_tsn.rand() < 0.3:
+                    if rng_tsn.rand() < bg_prob:
                         tsn_env.gantt.check_and_add_slot(i, rng_tsn.uniform(0, 300), rng_tsn.uniform(100, 400))
             else:
                 tsn_obs, current_node, action_mask = next_tsn_obs, next_current_node, next_mask
@@ -169,6 +169,24 @@ fresh_gnn_agent = None
 fresh_agv_agent = None
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--scenario', choices=['normal', 'pressure'], default='pressure',
+                        help='normal: BG=0.1 jitter(0.5,3) | pressure: BG=0.3 jitter(1,10)')
+    parser.add_argument('--output', type=str, default=None, help='Custom output CSV path')
+    parser.add_argument('--npz', type=str, default=None, help='Custom raw data path')
+    args = parser.parse_args()
+
+    if args.scenario == 'normal':
+        bg_prob = 0.1
+        jitter_range = (0.5, 3.0)
+        scenario_tag = 'normal'
+    else:
+        bg_prob = 0.3
+        jitter_range = (1.0, 10.0)
+        scenario_tag = 'pressure'
+
+    print(f"Scenario: {scenario_tag} (bg_prob={bg_prob}, jitter={jitter_range})")
     global gnn_agent, agv_agent, fresh_gnn_agent, fresh_agv_agent
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -202,7 +220,8 @@ def main():
     results = {}
     
     for m in methods:
-        res = run_evaluation(m['name'], m['routing'], m['agv'], seeds, device)
+        res = run_evaluation(m['name'], m['routing'], m['agv'], seeds, device,
+                             bg_prob=bg_prob, jitter_range=jitter_range)
         results[m['id']] = res
         
     summary = []
@@ -276,18 +295,17 @@ def main():
         print(f"M1 vs {m['id']}: p-value = {p_values[m['id']]:.4e}, Cohen's d = {cohens_d[m['id']]:.4f}")
         
     os.makedirs("images", exist_ok=True)
-    df.to_csv("images/benchmark_table.csv", index=False)
-    
-    latex_str = df.to_latex(index=False, float_format="%.2f")
-    with open("images/benchmark_table.tex", "w") as f:
-        f.write(latex_str)
-        
-    np.savez("images/benchmark_raw_data.npz", 
-             methods=methods,
-             results=results,
-             p_values=p_values)
-             
-    print("\nBenchmark completed. Results saved to images/benchmark_table.csv")
+    csv_out = args.output or f"images/benchmark_table_{scenario_tag}.csv"
+    tex_out = args.output or f"images/benchmark_table_{scenario_tag}.tex"
+    npz_out = args.npz or f"images/benchmark_raw_data_{scenario_tag}.npz"
+    df.to_csv(csv_out, index=False)
+    with open(tex_out, "w") as f:
+        f.write(df.to_latex(index=False))
+    np.savez(npz_out,
+             results=np.array(results, dtype=object),
+             p_values=np.array(p_values, dtype=object),
+             allow_pickle=True)
+    print(f"\nBenchmark [{scenario_tag}] completed. Results saved to {csv_out}")
 
 if __name__ == "__main__":
     main()

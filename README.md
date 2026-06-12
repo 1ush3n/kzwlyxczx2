@@ -55,7 +55,7 @@
 | **数据处理** | Pandas | 统计数据汇总与导出 |
 | **配置管理** | PyYAML | YAML 配置文件解析 |
 | **仿真核心** | 自研物理引擎 | Kelvin-Voigt 模型 + RK4 数值积分 |
-| **通信协议** | Modbus TCP（预留接口） | 真实 PLC 通信占位 |
+| **通信协议** | Modbus TCP + OPC UA | PLC 实时控制与工业语义互操作 |
 
 ---
 
@@ -172,7 +172,7 @@
 ```
 BasePLCInterface (ABC 抽象基类)
 ├── MockPLC          (纯内存仿真，包含网络噪声模拟)
-└── ModbusTCP_PLC    (Modbus TCP 真实协议占位，当前委托给 MockPLC)
+└── ModbusTCPPLC     (真实 Modbus TCP 客户端，访问独立虚拟/真实 PLC)
 ```
 
 **`BasePLCInterface` 抽象接口**：
@@ -1054,7 +1054,7 @@ tensorboard --logdir runs/ --bind_all
   - [8.5 GanttChartManager — 甘特图管理器](#85-ganttchartmanager--甘特图管理器)
   - [8.6 TSNTopology — 拓扑管理器](#86-tsntopology--拓扑管理器)
   - [8.7 AGVSystemSim — 物理引擎](#87-agvsystemsim--物理引擎)
-  - [8.8 BasePLCInterface / MockPLC / ModbusTCP_PLC — 通信接口](#88-baseplcinterface--mockplc--modbustcp_plc--通信接口)
+  - [8.8 BasePLCInterface / MockPLC / ModbusTCPPLC — 通信接口](#88-baseplcinterface--mockplc--modbustcpplc--通信接口)
 - [9. 配置参数详解](#9-配置参数详解)
 - [10. 测试用例说明](#10-测试用例说明)
 - [11. 常见问题排查指南](#11-常见问题排查指南)
@@ -1372,7 +1372,7 @@ e, e_dot, F_ext = sim.get_state()
 
 ---
 
-### 8.8 BasePLCInterface / MockPLC / ModbusTCP_PLC — 通信接口
+### 8.8 BasePLCInterface / MockPLC / ModbusTCPPLC — 通信接口
 
 **抽象接口** `BasePLCInterface`：
 
@@ -1726,7 +1726,7 @@ test(benchmark): add M7 baseline (round-robin routing)
 #### Added
 - 初始版本发布
 - **核心物理引擎**：Kelvin-Voigt 模型 + RK4 数值积分的 AGV 主从协同动力学仿真
-- **通信接口层**：MockPLC（含极端 Pareto 延迟模式）+ ModbusTCP_PLC 占位接口
+- **通信接口层**：MockPLC（含极端 Pareto 延迟模式）以及可扩展 PLC 抽象接口
 - **TSN 网络层**：环+星型拓扑的 GCL 甘特图调度器，支持周期卷绕碰撞检测
 - **AGV RL 环境**：遵循 Gymnasium 标准接口的柔顺控制环境
 - **TSN-GNN 环境**：自回归路由-调度联合决策的自定义环境
@@ -1740,6 +1740,113 @@ test(benchmark): add M7 baseline (round-robin routing)
 - torch_geometric 2.3+
 - stable-baselines3 2.1+
 - gymnasium 0.28+
+
+---
+
+## 14. 工业协议接入
+
+系统现已提供可运行的 **Modbus TCP + OPC UA** 工业通信链路。默认强化学习训练仍使用内存 `MockPLC`，协议演示使用独立虚拟 PLC，因此不会改变已有模型的观测空间和权重。
+
+### 14.1 安装协议依赖
+
+所有命令均在 `rag_env` 中执行：
+
+```powershell
+conda run -n rag_env python -m pip install -r requirements-protocols.txt
+```
+
+### 14.2 启动完整协议栈
+
+```powershell
+conda run -n rag_env python -m services.protocol_stack
+```
+
+默认端点：
+
+- Modbus TCP：`127.0.0.1:1502`，设备号 `1`
+- OPC UA：`opc.tcp://127.0.0.1:4840/apal/cps/`
+- OPC UA 命名空间：`urn:apal:cps:agv`
+
+可使用 Wireshark 观察 Modbus TCP 和 OPC UA 报文，也可使用 UaExpert 浏览：
+
+```text
+Objects/APALCPS/AGV1
+├── Identification
+├── Motion
+├── Structure
+├── Network
+├── Control
+└── Diagnostics
+```
+
+`ActualMd/Bd/Kd` 为只读实际值。外部客户端必须先写入 `RequestedMd/Bd/Kd`，再调用 `ApplyImpedance`；越界参数会返回 `BadOutOfRange`。调用 `ReleaseManualControl` 后恢复自动控制。
+
+### 14.3 运行闭环演示
+
+以下命令会自动启动服务、订阅外力、推进 AGV、应用人工阻抗并恢复自动控制：
+
+```powershell
+conda run -n rag_env python -m services.demo_protocol_stack
+```
+
+### 14.4 安全模式
+
+默认 `development` 模式仅绑定本机并允许无加密访问。将 `config/industrial_protocols.yaml` 中的 `opcua.security_mode` 改为 `secure` 后，仅开放 `Basic256Sha256 / SignAndEncrypt`。
+
+生成或更新服务器与客户端证书：
+
+```powershell
+conda run -n rag_env python -m services.generate_certificates --force
+```
+
+证书位于 `.runtime/certs/`，包含 `localhost`、`127.0.0.1` 和应用 URI 的 SAN，且不会提交到 Git。
+
+### 14.5 协议测试
+
+```powershell
+conda run -n rag_env python -m pytest tests/test_protocol_codec.py -q
+conda run -n rag_env python -m pytest tests/test_modbus_protocol.py -q
+conda run -n rag_env python -m pytest tests/test_opcua_protocol.py -q
+```
+
+## 15. 数字孪生、AAS 与 MAPE-K 自主闭环
+
+协议栈启动器现在默认同时管理 Modbus TCP 虚拟 PLC、OPC UA 网关和
+MAPE-K 服务三个独立进程。数字孪生以 50 ms 周期构建统一状态，并把时序状态、
+故障事件、决策和执行结果写入 `.runtime/twin/twin_history.sqlite3`。
+轻量级 AAS 运行快照写入 `.runtime/twin/AGV1.aas.json`。
+
+自主闭环包含：
+
+- `Monitor`：应力、RTT、抖动、AP1/AP2 RSSI、报警、阻抗和数据年龄。
+- `Analyze`：AP 衰减、RTT 突增、应力超限、PLC 断链和模型失配。
+- `Plan`：安全停车、AP 重路由、阻抗降级、维护告警和平滑恢复。
+- `Execute`：调用 OPC UA 的 `ApplyRoute`、`ApplyImpedance`、`SafeStop` 和 `ResetSafety`。
+- `Knowledge`：SQLite 历史状态和 AAS 数字孪生快照。
+
+PLC 具有独立的 300 ms 本地看门狗。上层控制超时后，PLC 会进入
+`SAFETY_STOP`，主车速度锁存为 0，并保持最后安全阻抗。通信恢复不会自动解除，
+必须显式调用 `ResetSafety`。
+
+### 15.1 三故障一键演示
+
+```powershell
+conda run -n rag_env python -m services.demo_autonomous_cps
+```
+
+演示依次完成活动 AP 衰减自动重路由、250 ms RTT 突增自动调整阻抗，以及
+800 ms PLC 通信中断后的本地停车和显式安全复位。
+
+输出文件位于 `.runtime/twin/`：
+
+```text
+mapek_timeline.csv
+fault_events.csv
+decisions.csv
+autonomous_cps_report.png
+twin_history.sqlite3
+AGV1.aas.json
+```
 
 ---
 

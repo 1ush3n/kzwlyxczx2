@@ -30,6 +30,9 @@ def test_tsn_env_routing_and_dead_end():
     print("Testing TSN_GNN_Env Routing and Dead-End Penalty...")
     env = TSN_GNN_Env()
     obs, curr_node, mask = env.reset()
+    # 固定路径测试只验证拓扑连通性，清除 reset 随机注入的背景时隙。
+    env.gantt.reset()
+    env._update_edge_occupancy()
     
     # 手动走几步，验证连通性
     # 拓扑：0->1->3->5->7->9

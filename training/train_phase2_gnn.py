@@ -107,7 +107,7 @@ def main():
             action_mask = next_mask
             
         # Episode 结束，准备数据
-        if len(rewards) == 0: continue
+        if len(rewards) == 0 or len(rewards) < 2: continue   # 跳过单步collision (无法计算std→NaN)
         
         if episode % 10 == 0:
             print(f"Episode {episode} finished with status: {info.get('status', 'unknown')}, Reward: {sum(rewards):.2f}, Peak Stress Penalty: {info.get('stress_penalty', 0):.2f}")

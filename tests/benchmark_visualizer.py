@@ -191,10 +191,18 @@ def plot_pvalue_heatmap(p_values, methods, output_dir):
     plt.close()
 
 def main():
+    import argparse as ap
+    parser = ap.ArgumentParser()
+    parser.add_argument('--scenario', default='pressure', choices=['normal','pressure'])
+    args = parser.parse_args()
     plt.style.use('dark_background')
     
-    data_path = "images/benchmark_raw_data.npz"
-    csv_path = "images/benchmark_table.csv"
+    data_path = f"images/benchmark_raw_data_{args.scenario}.npz"
+    csv_path = f"images/benchmark_table_{args.scenario}.csv"
+    if not os.path.exists(data_path):
+        data_path = "images/benchmark_raw_data.npz"
+    if not os.path.exists(csv_path):
+        csv_path = "images/benchmark_table.csv"
     output_dir = "images/benchmark_plots"
     
     os.makedirs(output_dir, exist_ok=True)

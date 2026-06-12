@@ -1,0 +1,74 @@
+Viewed %E8%AE%BA%E6%96%87%E5%8E%9F%E7%A8%BF.txt:1-800
+Viewed README.md:1-800
+Searched for "图[0-9]+-[0-9]+"
+Searched for "图[0-9]"
+Ran command: `python -c "import io; [print(line.strip()) for i, line in enumerate(io.open(r'd:\OneDrive\研究生\控制网络与现场总线\2\论文原稿.txt', encoding='utf-8')) if '图' in line]"`
+Viewed benchmark_visualizer.py:1-177
+Ran command: `python -c "
+import io
+lines = io.open(r'd:\OneDrive\研究生\控制网络与现场总线\2\论文原稿.txt', encoding='utf-8').readlines()
+for i, line in enumerate(lines):
+    if '图3-2' in line or '图3-4' in line or '图4-1' in line or '图5-1' in line or '图5-4' in line:
+        print(f'--- Line {i} ---')
+        print(''.join(lines[max(0, i-2):min(len(lines), i+3)]))
+"`
+
+这是一份针对您的论文正文（原稿）和项目代码基础（README）的深度审计报告。经过交叉比对，您的实验数据在数值上（如平均应力 48.40 N、抖动 2.66 ms 等）与代码产出高度吻合，体现了极高的严谨性。但在**“图表与代码映射”**以及部分**“统计学概念”**上，存在明显的错位和缺失。
+
+详细审查结果如下：
+
+### 【论文审查意见】
+
+**1. 事实错误：统计指标概念混淆（重要）**
+*   **出处**：摘要及结论部分（“最终模型（M1）在峰值应力（平均48.40 N）...”）
+*   **矛盾分析**：根据 `README.md` 中的 `final_stats.csv` 数据，`48.40 N` 是 **应力均值 (Stress Mean)**，而该模型的最大峰值应力 (Stress Max) 达到了 `2786.18 N`，P95 分位数也达到了 `137.90 N`。
+*   **修改建议**：在论文中应明确修改为“在平均应力（48.40 N）... 上均显著优于”，或者引用 P95 数据以展示系统对极端峰值的抑制能力。如果混用“峰值”和“平均”会被审稿人直接指出逻辑硬伤。
+
+**2. 事实错误：图表描述与代码实现不符**
+*   **出处**：正文关于“图 5-4 抖动小提琴分布对比图”的描述。
+*   **矛盾分析**：论文正文声称该图展示的是**网络延迟/抖动的分布态势**（“分布逐渐收敛于 3ms... M1 和 M5 的分布较窄”）。但查阅 `benchmark_visualizer.py` 中的 `plot_violin` 函数源码发现，该函数实际提取和绘制的是 **`Peak Stress (N)`（峰值应力）** 的数据。
+*   **修改建议**：这在答辩或代码开源审查时是致命的（图文不符）。需要决定是修改论文文字（将其改为“应力分布小提琴图”），还是修改代码逻辑使其真正绘制 Jitter 抖动。
+
+---
+
+### 【图表一致性报告】
+
+经全面审计，论文中出现的许多高质量过程分析图表，在当前的 `tests/` 或 `training/` 目录中**缺乏配套的生成代码/数据保存逻辑**（即“凭空出现”的图表）。缺失项如下：
+
+| 论文图表编号 | 论文中的图表名称 / 描述 | 当前代码库状态核查 | 结论 |
+| :--- | :--- | :--- | :--- |
+| **图 3-3** | Phase 1 PPO 训练指标曲线 | 目前仅在 `runs/` 目录保存了 TensorBoard 事件日志。 | ⚠️ **需补全**：缺少直接提取 TB 数据并绘制学术出版级折线图的脚本。 |
+| **图 3-4** | 响应面时间对比（3种策略消融实验） | 代码仅支持 6 种完整方法的 Benchmark，**没有**针对 Phase 1 内部（无控制、固定阻抗、PPO控制）的专门提取与测绘脚本。 | ❌ **严重缺失**：凭空出现。 |
+| **图 4-1** | 动态 RSSI 轨迹与 GNN 路由偏移 | 目前 `topology.py` 只有计算逻辑，**没有**随 AGV 位移（x=0~20m）遍历并记录 GNN 输出概率的脚本。 | ❌ **严重缺失**：凭空出现。 |
+| **图 4-2** | Phase 2 GNN 预训练曲线 | `train_phase2_gnn.py` 仅将结果 `print` 到终端，**没有**将历史 Reward/碰撞率持久化到 CSV，更无绘图代码。 | ❌ **严重缺失**：缺乏数据支撑。 |
+| **图 4-3** | 甘特图碰撞测试 | `test_tsn.py` 仅做了终端断言测试（Assert），**没有**能画出甘特图色块分布的可视化脚本。 | ⚠️ **需补全**：目前只是单元测试。 |
+| **图 5-1** | 乒乓协同训练，GNN与AGV应力变化 | `train_phase3_cotrain.py` 未保存每个 Cycle 的历史应力数据，**无法**绘制 15 轮随时间演进的双轴折线图。 | ❌ **严重缺失**：缺乏数据支撑。 |
+| **图 5-4** | 抖动小提琴图 | `benchmark_visualizer.py` 画的是**峰值应力**，不是抖动。 | ❌ **代码错位**：需修复。 |
+
+---
+
+### 【代码实施计划】
+
+为了让您的论文做到“100% 数据可复现”并经得起审稿人的 Review，建议按以下逻辑补充相关评估与可视化脚本（无需修改核心算法，只需“外挂”测试代码）：
+
+**1. 针对“图 3-4 柔顺控制消融实验” (`tests/plot_ablation_phase1.py`)**
+*   **开发逻辑**：编写独立脚本，加载预训练的 `ppo_agv_final.zip`。在固定极端延迟的 `extreme_pareto` 模式下，运行一个完整的 Episode（约 200 步）。
+*   **对比维度**：在相同随机种子下运行 3 次。第一次使用刚性基准动作（如 `[0, 0, 0]`）；第二次屏蔽控制（强行注入最差刚度）；第三次使用 PPO 预测。记录每步的 `F_ext`。
+*   **绘图**：绘制 `Physics Step` vs `Stress (N)` 的三色对比折线图。
+
+**2. 针对“图 4-1 动态 RSSI 与路由概率” (`tests/plot_rssi_routing.py`)**
+*   **开发逻辑**：加载 `ppo_gnn_final.pth`。构建一个循环，使得 `agv_x` 从 $0.0$ 以 $0.1m$ 的步进移动到 $20.0$。
+*   **数据采集**：每次移动后，调用 `topology.update_roaming_rssi(x)`。获取 `Node 7 (AP1)` 和 `Node 8 (AP2)` 的 RSSI 真实值；同时将数据送入 GNN 的 Routing Head，提取并执行 Softmax 得到选择 AP1 和 AP2 的理论概率。
+*   **绘图**：绘制双 Y 轴图（Twinx）。左轴绘制 RSSI 衰减曲线（dBm），右轴绘制 GNN 路由选择概率（0~100%）。
+
+**3. 针对“图 4-2 / 5-1 训练过程可视化” (`training/` 日志补全与 `plot_learning_curves.py`)**
+*   **开发逻辑**：
+    *   修改 `train_phase2_gnn.py`：在外层维护一个 List，每 10 个 Episode 记录平均 Reward 和 碰撞数，最终存为 `phase2_history.csv`。
+    *   修改 `train_phase3_cotrain.py`：建立 `phase3_history.csv`，记录每个 Cycle 结束后的 GNN Critic Loss、平均 Reward 以及 AGV 的验证峰值应力。
+*   **绘图**：编写专门的绘图脚本，读取上述 CSV，用 Seaborn 的 `lineplot` 画带平滑阴影（Rolling Mean）的收敛曲线。
+
+**4. 针对“图 5-4 抖动小提琴图修复” (修改 `benchmark_visualizer.py`)**
+*   **开发逻辑**：重写或新增绘图函数。当前跑完 Benchmark 后 `results` 字典里包含了完整的 `all_metrics['jitter']` 列表。
+*   **绘图**：新增一个 `plot_jitter_violin` 函数，提取所有方法的 `jitter` 数组，横坐标为 Method，纵坐标为 Jitter (ms)，绘制核密度小提琴图（设置 `cut=0` 防止出现负数）。
+
+请问是否需要我启动实施计划，为您逐一编写上述缺失的绘图脚本和数据采集代码？

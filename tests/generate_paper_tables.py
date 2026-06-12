@@ -106,37 +106,61 @@ def table_5_5(df, results):
     return pd.DataFrame(rows)
 
 
+def load_data(scenario='pressure'):
+    csv_path = os.path.join(BASE, "images", f"benchmark_table_{scenario}.csv")
+    npz_path = os.path.join(BASE, "images", f"benchmark_raw_data_{scenario}.npz")
+    if not os.path.exists(csv_path):
+        csv_path = os.path.join(BASE, "images", "benchmark_table.csv")
+    if not os.path.exists(npz_path):
+        npz_path = os.path.join(BASE, "images", "benchmark_raw_data.npz")
+    df = pd.read_csv(csv_path, skipinitialspace=True)
+    raw = np.load(npz_path, allow_pickle=True)
+    results = raw['results'].item()
+    return df, results
+
+
 def main():
-    df, results = load_data()
-    tables = {
-        'paper_table_5_2': table_5_2,
-        'paper_table_5_3': table_5_3,
-        'paper_table_5_4': table_5_4,
-        'paper_table_5_5': table_5_5,
-    }
+    import argparse as ap
+    parser = ap.ArgumentParser()
+    parser.add_argument('--scenario', default='pressure', choices=['normal','pressure','both'],
+                        help='Which scenario(s) to generate tables for')
+    args = parser.parse_args()
     out_dir = os.path.join(BASE, "images")
     os.makedirs(out_dir, exist_ok=True)
 
-    for name, fn in tables.items():
-        if name == 'paper_table_5_4':
-            tbl = fn(df)
-        elif name == 'paper_table_5_5':
-            tbl = fn(df, results)
-        else:
-            tbl = fn(df, results)
+    scenarios = ['normal', 'pressure'] if args.scenario == 'both' else [args.scenario]
 
-        csv_p = os.path.join(out_dir, f"{name}.csv")
-        tex_p = os.path.join(out_dir, f"{name}.tex")
-        tbl.to_csv(csv_p, index=False)
-        with open(tex_p, 'w') as f:
-            f.write(tbl.to_latex(index=False, escape=False))
-        print(f"  {name}: {csv_p}")
-        print(f"          {tex_p}")
-        print(f"  {name} preview:")
+    for scenario in scenarios:
+        df, results = load_data(scenario)
+        print(f"\n{'='*60}")
+        print(f"  Generating tables for: {scenario}")
+        print(f"{'='*60}")
+
+        tables = {
+            'paper_table_5_2': table_5_2,
+            'paper_table_5_3': table_5_3,
+            'paper_table_5_4': table_5_4,
+            'paper_table_5_5': table_5_5,
+        }
+
+        for name, fn in tables.items():
+            if name == 'paper_table_5_4':
+                tbl = fn(df)
+            elif name == 'paper_table_5_5':
+                tbl = fn(df, results)
+            else:
+                tbl = fn(df, results)
+
+            tag = f'_{scenario}' if len(scenarios) > 1 else ''
+            csv_p = os.path.join(out_dir, f"{name}{tag}.csv")
+            tex_p = os.path.join(out_dir, f"{name}{tag}.tex")
+            tbl.to_csv(csv_p, index=False)
+            with open(tex_p, 'w') as f:
+                f.write(tbl.to_latex(index=False, escape=False))
+            print(f"  {name}{tag}: generated")
         print(tbl.to_string(index=False))
-        print()
 
-    print("All paper tables generated.")
+    print("\nAll paper tables generated.")
 
 
 if __name__ == "__main__":
